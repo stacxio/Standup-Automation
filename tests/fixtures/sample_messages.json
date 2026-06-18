@@ -1,0 +1,13 @@
+{
+  "_comment": "Sample Slack messages for Phase 1 summarize testing.",
+  "messages": [
+    {"user": "U001", "ts": "1718500000.0001", "text": "Yesterday finished the login API. Today starting on the dashboard. No blockers."},
+    {"user": "U002", "ts": "1718500100.0001", "text": "Blocked on the staging DB creds, waiting on ops. Otherwise reviewing PRs."},
+    {"user": "U003", "ts": "1718500200.0001", "text": "ooo today"}
+  ],
+  "users": {
+    "U001": "Alice Perera",
+    "U002": "Bob Silva",
+    "U003": "Carol Fernando"
+  }
+}

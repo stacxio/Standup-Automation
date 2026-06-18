@@ -1,0 +1,19 @@
+[project]
+name = "standup-summarizer"
+version = "1.0.0"
+description = "Automated daily Slack standup summarizer -> Google Sheet"
+requires-python = ">=3.10"
+
+[project.scripts]
+standup = "standup_summarizer.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

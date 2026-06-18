@@ -1,0 +1,20 @@
+# Slack
+slack_sdk
+
+# Google Sheets
+gspread
+google-auth
+
+# Reasoning engine clients (install what your backend needs)
+anthropic            # hosted: Anthropic Messages API
+openai               # local/hosted via OpenAI-compatible endpoint (Ollama/vLLM/DashScope)
+
+# Config / validation
+pydantic
+python-dotenv
+
+# IANA timezone database (Windows has no system tz data for zoneinfo)
+tzdata
+
+# Dev / test
+pytest

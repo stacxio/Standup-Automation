@@ -1,0 +1,22 @@
+# Non-secret configuration (secrets belong in .env). See SRS Section 9.
+slack:
+  channel_id: C0123456789
+  include_threads: true
+
+reasoning:
+  backend: local          # hosted | local
+  model: qwen3:30b-a3b
+  base_url: http://localhost:11434/v1   # local only
+  max_retries: 3
+
+sheets:
+  spreadsheet_id: ""
+  tab_name: master-log
+
+schedule:
+  timezone: Asia/Colombo
+  run_window: today
+  expected_members:       # optional
+    - Alice Perera
+    - Bob Silva
+    - Carol Fernando
