@@ -14,3 +14,12 @@ venv/
 *.egg-info/
 build/
 dist/
+
+# Generated outputs (contain team attendance/salary data — never commit)
+Attendance/
+Salary_Slips/
+Result/*.csv
+Result/*.xlsx
+
+# Intermediate image assets (the committed logo is assets/stacx_banner.jpg)
+assets/*.png
