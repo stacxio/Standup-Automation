@@ -267,12 +267,14 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
     )
     sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
 
-    keep = {"Summary"} | {title for title, *_ in month_tabs}
+    keep = {"Master", "Summary"} | {title for title, *_ in month_tabs}
 
-    # Summary first, then each month.
-    _write_tab(sh, "Summary", summary[0], summary[1], notes={}, colour_cells=False, index=0,
+    # Master first (employee details — seeded once, then preserved), then Summary,
+    # then each month.
+    ensure_master(sh)
+    _write_tab(sh, "Summary", summary[0], summary[1], notes={}, colour_cells=False, index=1,
                title_label="Total Absence = Absent + Leave", emphasize_last_col=True)
-    for i, (title, header, rows, notes) in enumerate(month_tabs, start=1):
+    for i, (title, header, rows, notes) in enumerate(month_tabs, start=2):
         _write_tab(sh, title, header, rows, notes=notes, colour_cells=True, index=i)
 
     # Remove stale tabs (old long-format "Attendance", default "Sheet1", etc.).
@@ -280,6 +282,52 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
         if ws.title not in keep:
             sh.del_worksheet(ws)
     return sh.url
+
+
+# Employee master (seeded once into the "Master" tab; edit it in the sheet after).
+MASTER_HEADERS = ["Name", "Employee ID", "Designation", "Gross Salary"]
+MASTER_SEED = [
+    ["GN", 1234, "Engineer", 50000],
+    ["Soma", 9999, "Engineer", 50000],
+    ["Raghul", 6666, "Engineer", 50000],
+    ["Sahil", 3333, "Engineer", 50000],
+]
+
+
+def ensure_master(sh) -> None:
+    """Create the 'Master' tab (before Summary) with seed rows, only if absent.
+
+    Once it exists it is never overwritten — it holds manually-maintained
+    employee details (Employee ID, Designation, Gross Salary).
+    """
+    import gspread
+
+    try:
+        sh.worksheet("Master")
+        return  # already exists — preserve manual edits
+    except gspread.WorksheetNotFound:
+        pass
+
+    ws = sh.add_worksheet(title="Master", rows=30, cols=6, index=0)
+    ws.update(values=[MASTER_HEADERS] + MASTER_SEED, range_name="A1", value_input_option="RAW")
+    ws.freeze(rows=1)
+    sid = ws.id
+    sh.batch_update({"requests": [
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _rgb(HEADER_BG),
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "foregroundColor": _rgb("FFFFFF")}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+        {"repeatCell": {  # Gross Salary as #,##0
+            "range": {"sheetId": sid, "startRowIndex": 1, "startColumnIndex": 3, "endColumnIndex": 4},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}},
+            "fields": "userEnteredFormat.numberFormat"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 4},
+            "properties": {"pixelSize": 130}, "fields": "pixelSize"}},
+    ]})
 
 
 def _write_tab(sh, title, header, rows, notes, colour_cells, index, title_label=None,

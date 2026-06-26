@@ -1,13 +1,19 @@
-"""Generate monthly salary slips (PDF) from the attendance Summary tab.
+"""Generate monthly STACX24 payslips (PDF) from the Master + Summary tabs.
 
-For a pay-period month it reads each person's absence from the Summary tab of the
-attendance Google Sheet, computes Working Days (weekdays in the month), Present
-Days (= Working - Absent), and renders a salary slip PDF (stacx24 logo + table)
-per person into Salary_Slips/.
+For a pay-period month it reads each employee's details from the "Master" tab
+(Name, Employee ID, Designation, Gross Salary) and their absence from the
+"Summary" tab of the attendance Google Sheet, computes pay, and renders an
+official payslip PDF per person into Salary_Slips/.
 
-Pay period defaults to the current month; override with PAY_PERIOD=YYYY-MM.
+Pay model (matches the STACX24 official payslip):
+  Working Days = calendar days in the month      Present Days = Working - Absent
+  Per-day pay  = Gross / Working Days            Leave Deduction = Per-day * Absent
+  PF = TDS = 0                                   Net = Gross - Total Deductions
 
-Run:  .venv/Scripts/python.exe build_salary_slips.py
+Pay period defaults to the PREVIOUS month (payroll pays the completed month);
+override with PAY_PERIOD=YYYY-MM. Add --upload to push PDFs to Drive (OAuth).
+
+Run:  .venv/Scripts/python.exe build_salary_slips.py [--upload]
 """
 
 from __future__ import annotations
@@ -23,76 +29,134 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 ROOT = Path(__file__).parent
 SPREADSHEET_ID = os.environ.get("ATTENDANCE_SPREADSHEET_ID", "1W3H2uMFG__KTSXDw0trJi71M1RahQS65_bao8EC4sOI")
 KEY_PATH = os.environ.get("GOOGLE_SA_KEY_PATH", "credentials/google_credentials.json")
-BANNER = ROOT / "assets" / "stacx_banner.jpg"
 OUT_DIR = ROOT / "Salary_Slips"
 
-# Summary short names -> full names for the slip.
+COMPANY = "STACX24"
+TAGLINE = "Full Stack Development Agency"
+PAYMENT_MODE = "Bank Transfer"
+CUR = "Rs."  # Helvetica can't render the rupee glyph cleanly, so use "Rs."
+
+# Master short names -> full names for the payslip's Employee Name.
 NAME_MAP = {"GN": "G N", "Soma": "Soma Pani", "Raghul": "Raghul", "Sahil": "Sahil Thakur"}
 MONTH_ABBR = [calendar.month_abbr[m] for m in range(1, 13)]
 
 
-def read_summary() -> tuple[list[str], list[list[str]]]:
+def _open_sheet():
     import gspread
     from google.oauth2.service_account import Credentials
 
+    key = Path(KEY_PATH)
+    if not key.is_absolute():  # resolve against the project so cwd doesn't matter
+        key = ROOT / key
     creds = Credentials.from_service_account_file(
-        KEY_PATH, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        str(key), scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    ws = gspread.authorize(creds).open_by_key(SPREADSHEET_ID).worksheet("Summary")
-    vals = ws.get_all_values()
+    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+
+
+def read_master(sh) -> list[dict]:
+    """Return employee rows from the Master tab (in sheet order)."""
+    vals = sh.worksheet("Master").get_all_values()
+    out = []
+    for r in vals[1:]:
+        if not r or not r[0].strip():
+            continue
+        gross = float(str(r[3]).replace(",", "").replace(CUR, "").strip() or 0)
+        out.append({"short": r[0].strip(), "emp_id": r[1].strip(),
+                    "designation": r[2].strip(), "gross": gross})
+    return out
+
+
+def read_absent(sh, year: int, month: int) -> dict[str, int]:
+    """Return {short_name: absence count} for the month from the Summary tab."""
+    vals = sh.worksheet("Summary").get_all_values()
     hdr_idx = next(i for i, r in enumerate(vals) if r and r[0] == "Name")
-    return vals[hdr_idx], [r for r in vals[hdr_idx + 1:] if r and r[0]]
+    col = vals[hdr_idx].index(MONTH_ABBR[month - 1])
+    out = {}
+    for r in vals[hdr_idx + 1:]:
+        if r and r[0].strip():
+            out[r[0].strip()] = int(r[col]) if col < len(r) and str(r[col]).strip().isdigit() else 0
+    return out
 
 
-def working_days(year: int, month: int) -> int:
-    """Count weekdays (Mon-Fri) in the month."""
-    ndays = calendar.monthrange(year, month)[1]
-    return sum(1 for d in range(1, ndays + 1) if dt.date(year, month, d).weekday() < 5)
+def _money(x: float) -> str:
+    return f"{x:,.2f}"
 
 
-def make_slip(name, pay_period, work, present, absent, out_path: Path) -> None:
+def make_payslip(d: dict, out_path: Path) -> None:
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("slip_title", parent=styles["Title"], fontSize=20, spaceAfter=4)
+    h1 = ParagraphStyle("co", parent=styles["Title"], fontSize=22, spaceAfter=2)
+    h2 = ParagraphStyle("ttl", parent=styles["Heading2"], fontSize=14, spaceAfter=0)
+    small = ParagraphStyle("sm", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#555555"))
 
-    doc = SimpleDocTemplate(
-        str(out_path), pagesize=A4,
-        topMargin=16 * mm, bottomMargin=20 * mm, leftMargin=20 * mm, rightMargin=20 * mm,
+    grey = colors.HexColor("#D9D9D9")
+    info = Table(
+        [["Employee Name", d["name"], "Employee ID", d["emp_id"]],
+         ["Designation", d["designation"], "Pay Period", d["period"]],
+         ["Working Days", str(d["working"]), "Present Days", str(d["present"])],
+         ["Absent Days", str(d["absent"]), "Payment Mode", PAYMENT_MODE]],
+        colWidths=[33 * mm, 52 * mm, 33 * mm, 52 * mm],
     )
-    banner = Image(str(BANNER), width=170 * mm, height=170 * mm * 132 / 430)
-    banner.hAlign = "LEFT"
+    info.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#888888")),
+        ("BACKGROUND", (0, 0), (0, -1), grey),
+        ("BACKGROUND", (2, 0), (2, -1), grey),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
 
+    money_hdr = f"AMOUNT ({CUR})"
     table = Table(
-        [["Pay Period", pay_period],
-         ["Working Days", str(work)],
-         ["Present Days", str(present)],
-         ["No. of Days Absent", str(absent)]],
-        colWidths=[55 * mm, 50 * mm],
+        [["EARNINGS", money_hdr],
+         ["Basic/Gross Salary", _money(d["gross"])],
+         ["Total Earnings", _money(d["gross"])],
+         ["DEDUCTIONS", money_hdr],
+         ["PF", _money(d["pf"])],
+         ["TDS", _money(d["tds"])],
+         [f"Leave Deduction ({d['absent']} Days)", _money(d["leave_ded"])],
+         ["Total Deductions", _money(d["total_ded"])],
+         ["NET SALARY PAYABLE", _money(d["net"])]],
+        colWidths=[110 * mm, 60 * mm],
     )
     table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#9E9E9E")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EFEFEF")),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#888888")),
+        ("BACKGROUND", (0, 0), (-1, 0), grey),
+        ("BACKGROUND", (0, 3), (-1, 3), grey),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 3), (-1, 3), "Helvetica-Bold"),
+        ("FONTNAME", (0, 8), (-1, 8), "Helvetica-Bold"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
-    table.hAlign = "LEFT"
 
+    sign = Table([["Employee Signature", "HR/Authorized Signatory"]], colWidths=[85 * mm, 85 * mm])
+    sign.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 10),
+                              ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+
+    doc = SimpleDocTemplate(str(out_path), pagesize=A4,
+                            topMargin=18 * mm, bottomMargin=18 * mm,
+                            leftMargin=20 * mm, rightMargin=20 * mm)
     doc.build([
-        banner,
-        Spacer(1, 10),
-        Paragraph("SALARY SLIP", title),
-        Spacer(1, 10),
-        Paragraph("<b>Company:</b> STACX24", styles["Normal"]),
-        Paragraph(f"<b>Employee Name:</b> {name}", styles["Normal"]),
-        Spacer(1, 16),
+        Paragraph(COMPANY, h1),
+        Paragraph(f"OFFICIAL PAYSLIP - {d['period'].upper()}", h2),
+        Paragraph(TAGLINE, small),
+        Spacer(1, 12),
+        info,
+        Spacer(1, 14),
         table,
+        Spacer(1, 12),
+        Paragraph(f"<b>Net Salary: {CUR} {_money(d['net'])}</b>", styles["Normal"]),
+        Paragraph("This is a system-generated salary slip.", small),
+        Spacer(1, 26),
+        sign,
     ])
 
 
@@ -102,43 +166,53 @@ def main() -> None:
     period = os.environ.get("PAY_PERIOD")
     if period:
         year, month = (int(x) for x in period.split("-"))
-    else:
-        today = dt.date.today()
-        year, month = today.year, today.month
-
-    header, rows = read_summary()
-    col = header.index(MONTH_ABBR[month - 1])
-    work = working_days(year, month)
+    else:  # default: previous month (payroll pays the completed month)
+        first_this = dt.date.today().replace(day=1)
+        prev = first_this - dt.timedelta(days=1)
+        year, month = prev.year, prev.month
     period_label = dt.date(year, month, 1).strftime("%B %Y")
+    working = calendar.monthrange(year, month)[1]  # calendar days in the month
+
+    sh = _open_sheet()
+    employees = read_master(sh)
+    absents = read_absent(sh, year, month)
 
     OUT_DIR.mkdir(exist_ok=True)
     made = []
-    for r in rows:
-        short = r[0]
-        absent = int(r[col]) if col < len(r) and str(r[col]).strip().isdigit() else 0
+    for e in employees:
+        short = e["short"]
+        absent = absents.get(short, 0)
+        present = working - absent
+        per_day = e["gross"] / working if working else 0
+        leave_ded = round(per_day * absent, 2)
+        total_ded = round(0.0 + 0.0 + leave_ded, 2)
+        net = round(e["gross"] - total_ded, 2)
         name = NAME_MAP.get(short, short)
-        present = work - absent
-        out = OUT_DIR / f"{name.replace(' ', '_')}_Salary_Slip_{period_label.replace(' ', '_')}.pdf"
-        make_slip(name, period_label, work, present, absent, out)
+        d = {"name": name, "emp_id": e["emp_id"], "designation": e["designation"],
+             "period": period_label, "working": working, "present": present, "absent": absent,
+             "gross": e["gross"], "pf": 0.0, "tds": 0.0, "leave_ded": leave_ded,
+             "total_ded": total_ded, "total_earn": e["gross"], "net": net}
+        out = OUT_DIR / f"{name.replace(' ', '_')}_Payslip_{period_label.replace(' ', '_')}.pdf"
+        make_payslip(d, out)
         made.append(out)
-        print(f"  {name:<14} WorkingDays={work} Present={present} Absent={absent} -> {out.name}")
+        print(f"  {name:<14} ID={e['emp_id']:<6} Gross={_money(e['gross'])} "
+              f"Absent={absent} Net={_money(net)} -> {out.name}")
 
-    print(f"Pay period: {period_label} | generated {len(made)} salary slip(s) in {OUT_DIR}")
+    print(f"Pay period: {period_label} | Working Days={working} | {len(made)} payslip(s) in {OUT_DIR}")
 
     if "--upload" in sys.argv or os.environ.get("UPLOAD_TO_DRIVE"):
         _upload(made)
 
 
 def _upload(paths) -> None:
-    """Upsert the generated slips into a 'Salary Slips' Drive folder via OAuth."""
     from drive_oauth import find_or_create_folder, get_service, upsert_file
 
     svc = get_service()
     folder_id = find_or_create_folder(svc, "Salary Slips")
-    print(f"Uploading {len(paths)} slip(s) to Drive folder 'Salary Slips' ({folder_id}) ...")
+    print(f"Uploading {len(paths)} payslip(s) to Drive folder 'Salary Slips' ...")
     for p in paths:
         fid, action = upsert_file(svc, p, folder_id)
-        print(f"  {action:<8} {p.name}  -> https://drive.google.com/file/d/{fid}/view")
+        print(f"  {action:<8} {p.name} -> https://drive.google.com/file/d/{fid}/view")
 
 
 if __name__ == "__main__":
