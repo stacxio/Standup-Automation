@@ -267,7 +267,7 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
     )
     sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
 
-    keep = {"Master", "Summary"} | {title for title, *_ in month_tabs}
+    keep = {"Master", "Summary", "Leaves"} | {title for title, *_ in month_tabs}
 
     # Master first (employee details — seeded once, then preserved), then Summary,
     # then each month.

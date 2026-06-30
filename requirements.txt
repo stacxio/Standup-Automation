@@ -1,9 +1,16 @@
 # Slack
 slack_sdk
+slack_bolt          # /leave Socket Mode form app
+websocket-client    # stable Socket Mode transport
 
-# Google Sheets
+# Google Sheets / Drive
 gspread
 google-auth
+google-api-python-client   # Drive API (uploads)
+google-auth-oauthlib       # OAuth user-credential Drive uploads
+
+# PDF generation (salary slips / payslips)
+reportlab
 
 # Reasoning engine clients (install what your backend needs)
 anthropic            # hosted: Anthropic Messages API
