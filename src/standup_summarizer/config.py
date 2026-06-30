@@ -40,3 +40,29 @@ class SlackConfig:
             channel_id=_env("SLACK_CHANNEL_ID", required=True),  # type: ignore[arg-type]
             include_threads=_env_bool("SLACK_INCLUDE_THREADS", True),
         )
+
+
+@dataclass(frozen=True)
+class ReasoningConfig:
+    """Settings for the summarize stage's reasoning engine (SRS Section 8 / 9).
+
+    backend selects the engine; everything else is config, not code (FR-11):
+      * "local"  / "openai" / "dashscope" -> OpenAI-compatible endpoint
+      * "anthropic"                        -> Anthropic Messages API
+    """
+
+    backend: str
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    max_retries: int = 3
+
+    @classmethod
+    def from_env(cls) -> "ReasoningConfig":
+        return cls(
+            backend=(_env("REASONING_BACKEND", "local") or "local").lower(),
+            model=_env("REASONING_MODEL", "llama3.2"),  # type: ignore[arg-type]
+            base_url=_env("REASONING_BASE_URL", "http://localhost:11434/v1"),
+            api_key=_env("REASONING_API_KEY"),
+            max_retries=int(_env("REASONING_MAX_RETRIES", "3") or 3),
+        )
