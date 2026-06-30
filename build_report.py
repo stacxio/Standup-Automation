@@ -228,9 +228,21 @@ def main() -> None:
         print("Nothing to summarize.")
         return
 
-    engine = build_engine(reasoning_cfg)
     print(f"Summarizing via backend={reasoning_cfg.backend} model={reasoning_cfg.model} ...")
-    records = summarize(entries, engine, reasoning_cfg.max_retries)
+    try:
+        engine = build_engine(reasoning_cfg)
+        records = summarize(entries, engine, reasoning_cfg.max_retries)
+    except Exception as exc:  # noqa: BLE001 — surface a clear, actionable message
+        print(f"\nReasoning engine unavailable — {type(exc).__name__}: {exc}")
+        if reasoning_cfg.backend in {"local", "ollama", "vllm"}:
+            print(
+                f"  The 'local' backend needs an OpenAI-compatible server at {reasoning_cfg.base_url}.\n"
+                f"  Start Ollama and `ollama pull {reasoning_cfg.model}`, or set a hosted backend\n"
+                "  (REASONING_BACKEND=anthropic|openai + REASONING_API_KEY) in .env."
+            )
+        else:
+            print("  Check REASONING_API_KEY / REASONING_MODEL / REASONING_BASE_URL in .env.")
+        sys.exit(2)  # exit 2 = "skipped" (backend not configured) — not a hard failure
 
     rows = build_rows(records, texts)
     values = [HEADERS] + rows

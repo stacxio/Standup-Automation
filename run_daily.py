@@ -38,9 +38,15 @@ def main() -> None:
                 )
                 log.write(f"--- {label} (exit {r.returncode}) ---\n")
                 log.write((r.stdout or "") + (r.stderr or "") + "\n")
-                print(f"{label}: exit {r.returncode}")
-                if r.returncode != 0:
+                # Convention: exit code 2 = the step skipped itself (e.g. report
+                # with no reasoning backend configured). Not counted as a failure.
+                if r.returncode == 2:
+                    print(f"{label}: skipped (exit 2)")
+                elif r.returncode != 0:
+                    print(f"{label}: FAILED (exit {r.returncode})")
                     failures += 1
+                else:
+                    print(f"{label}: ok")
             except Exception as exc:  # noqa: BLE001
                 log.write(f"--- {label} FAILED: {exc} ---\n")
                 print(f"{label}: FAILED ({exc})")
