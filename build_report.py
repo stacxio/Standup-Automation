@@ -297,6 +297,26 @@ def main() -> None:
     if url:
         print(f"Pushed {len(rows)} rows to Google Sheets -> {url}")
 
+    # Notify the channel only when the sheet was actually updated (url set).
+    # Opt-in (so test runs don't spam); enable with --notify or NOTIFY_SLACK=1.
+    if "--notify" in sys.argv or os.environ.get("NOTIFY_SLACK"):
+        print(notify_slack(slack_cfg, url))
+
+
+def notify_slack(cfg: SlackConfig, url: str | None) -> str:
+    """Post 'Stand-up updated successfully!' to the channel after a sheet update."""
+    if not url:
+        return "Sheet not updated — skipping Slack notification."
+    client = build_client(cfg.bot_token)
+    try:
+        resp = client.chat_postMessage(channel=cfg.channel_id, text="Stand-up updated successfully!")
+        return f"Posted Slack notification (ts={resp.get('ts')})."
+    except Exception as exc:  # noqa: BLE001
+        hint = ""
+        if "missing_scope" in str(exc):
+            hint = "  -> Add the 'chat:write' bot scope to the Slack app and reinstall it."
+        return f"Slack notification failed: {exc}{hint}"
+
 
 if __name__ == "__main__":
     main()

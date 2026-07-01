@@ -20,7 +20,7 @@ LOG = ROOT / "logs" / "daily.log"
 
 STEPS = [
     ("attendance", ["build_attendance.py", "--notify"]),
-    ("report", ["build_report.py"]),
+    ("report", ["build_report.py", "--notify"]),
 ]
 
 
