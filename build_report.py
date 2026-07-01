@@ -157,12 +157,16 @@ def _rgb(hex_color: str) -> dict:
 
 
 def push_to_sheets(values: list[list[str]]) -> str | None:
-    """Idempotently rewrite the configured Google Sheet tab; return its URL."""
+    """Write one tab per month (e.g. 'July2026'); return the spreadsheet URL.
+
+    Rows are split by their Date into month tabs. Each month tab is cleared and
+    rewritten (idempotent). Past month tabs outside the fetch window are left
+    untouched (history accumulates); the legacy single 'Sheet1' is removed.
+    """
     key_path = Path(os.environ.get("GOOGLE_SA_KEY_PATH", "credentials/google_credentials.json"))
     if not key_path.is_absolute():
         key_path = ROOT / key_path
     spreadsheet_id = os.environ.get("SPREADSHEET_ID", "").strip()
-    tab = os.environ.get("SHEET_TAB_NAME", "Sheet1").strip() or "Sheet1"
 
     if not spreadsheet_id or not key_path.exists():
         print(
@@ -175,19 +179,57 @@ def push_to_sheets(values: list[list[str]]) -> str | None:
     import gspread
     from google.oauth2.service_account import Credentials
 
+    header, rows = values[0], values[1:]
+    by_month = group_by_month(rows)
+
     creds = Credentials.from_service_account_file(
         str(key_path), scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
-    try:
-        ws = sh.worksheet(tab)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=tab, rows=len(values) + 10, cols=len(HEADERS))
 
-    ws.clear()
-    ws.update(values=values, range_name="A1", value_input_option="RAW")
-    _apply_formatting(sh, ws, len(values))
-    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={ws.id}"
+    written = []
+    for idx, (year, month) in enumerate(sorted(by_month)):
+        title = dt.date(year, month, 1).strftime("%B%Y")  # e.g. "July2026"
+        mvalues = [header] + by_month[(year, month)]
+        try:
+            ws = sh.worksheet(title)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=title, rows=len(mvalues) + 10, cols=len(HEADERS), index=idx)
+        ws.clear()
+        ws.resize(rows=max(len(mvalues) + 5, 10), cols=max(len(HEADERS) + 1, 12))
+        ws.update(values=mvalues, range_name="A1", value_input_option="RAW")
+        _apply_formatting(sh, ws, len(mvalues))
+        written.append((title, len(mvalues) - 1))
+
+    # Remove the legacy single tab (e.g. "Sheet1"); keep every month-named tab.
+    for ws in sh.worksheets():
+        if not _is_month_tab(ws.title):
+            sh.del_worksheet(ws)
+
+    for title, n in written:
+        print(f"  {title}: {n} row(s)")
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
+
+def group_by_month(rows: list[list[str]]) -> dict[tuple[int, int], list]:
+    """Group data rows by (year, month) from their Date column (col index 1)."""
+    by_month: dict[tuple[int, int], list] = defaultdict(list)
+    for row in rows:
+        try:
+            d = dt.date.fromisoformat(row[1])
+        except (ValueError, IndexError):
+            continue  # skip rows without a parseable date
+        by_month[(d.year, d.month)].append(row)
+    return by_month
+
+
+def _is_month_tab(name: str) -> bool:
+    """True if `name` looks like a '%B%Y' month tab (e.g. 'July2026')."""
+    try:
+        dt.datetime.strptime(name, "%B%Y")
+        return True
+    except ValueError:
+        return False
 
 
 def _apply_formatting(sh, ws, total_rows: int) -> None:
