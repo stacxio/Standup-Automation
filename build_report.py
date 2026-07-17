@@ -30,7 +30,8 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer.config import ReasoningConfig, SlackConfig  # noqa: E402
+from standup_summarizer import jira  # noqa: E402
+from standup_summarizer.config import JiraConfig, ReasoningConfig, SlackConfig  # noqa: E402
 from standup_summarizer.engines import build_engine  # noqa: E402
 from standup_summarizer.fetch import (  # noqa: E402
     _SlackFetcher,
@@ -42,7 +43,11 @@ from standup_summarizer.summarize import summarize  # noqa: E402
 HEADERS = [
     "Developer Name", "Date", "Projectname", "Task", "Value",
     "What got moved?", "Why it matters?", "Blockers?", "What's Next?", "Status",
+    "Picked Tasks", "Completed Tasks",
 ]
+
+# Jira issue keys, e.g. "PROJ-123". Matched case-insensitively then upper-cased.
+_JIRA_ID = re.compile(r"\b[A-Za-z][A-Za-z0-9]+-\d+\b")
 
 NO_CHECKIN = "No check-in"
 STATUS_FILL = {
@@ -126,14 +131,44 @@ def _derive_status(text: str) -> str:
     return "In Progress"
 
 
-def build_rows(records: list[dict], texts: dict) -> list[list[str]]:
-    """Turn engine records into deduplicated rows with a derived Status."""
+def extract_jira_ids(text: str) -> list[str]:
+    """Return the unique Jira keys mentioned in `text`, upper-cased, in order."""
+    seen: dict[str, None] = {}
+    for m in _JIRA_ID.findall(text or ""):
+        seen.setdefault(m.upper(), None)
+    return list(seen)
+
+
+def _completed_ids(ids: list[str], jira_cfg, cache: dict[str, bool]) -> list[str]:
+    """Subset of `ids` whose Jira status category is 'done' (cached per key)."""
+    out = []
+    for key in ids:
+        if key not in cache:
+            cache[key] = bool(jira.issue_done(jira_cfg, key))
+        if cache[key]:
+            out.append(key)
+    return out
+
+
+def build_rows(records: list[dict], texts: dict, jira_cfg=None) -> list[list[str]]:
+    """Turn engine records into deduplicated rows with a derived Status.
+
+    Picked Tasks are the Jira keys found in that person's posts for the day;
+    Completed Tasks are the subset Jira reports as done (empty when Jira is
+    unconfigured). Both are consolidated per (developer, date) from the combined
+    text, so every row for the same person/day shows the same key lists.
+    """
     seen: set[tuple] = set()
     rows: list[list[str]] = []
+    done_cache: dict[str, bool] = {}
     for r in records:
-        status = _derive_status(texts.get((r["developer"], r["date"]), ""))
+        combined = texts.get((r["developer"], r["date"]), "")
+        status = _derive_status(combined)
+        picked = extract_jira_ids(combined)
+        completed = _completed_ids(picked, jira_cfg, done_cache) if jira_cfg else []
         row = [r["developer"], r["date"], r["project"], r["task"], r["value"],
-               r["what_got_moved"], r["why_it_matters"], r["blockers"], r["whats_next"], status]
+               r["what_got_moved"], r["why_it_matters"], r["blockers"], r["whats_next"],
+               status, ", ".join(picked), ", ".join(completed)]
         key = tuple(row)
         if key in seen:
             continue
@@ -241,7 +276,7 @@ def _apply_formatting(sh, ws, total_rows: int) -> None:
             "backgroundColor": _rgb("1F4E78"),
             "horizontalAlignment": "CENTER",
         })
-        status_col0 = len(HEADERS) - 1
+        status_col0 = HEADERS.index("Status")
         rng = {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": total_rows,
                "startColumnIndex": status_col0, "endColumnIndex": status_col0 + 1}
         existing = next(
@@ -263,6 +298,13 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     slack_cfg = SlackConfig.from_env()
     reasoning_cfg = ReasoningConfig.from_env()
+
+    jira_cfg = JiraConfig.from_env()
+    if jira_cfg:
+        print(f"Jira status checks enabled ({jira_cfg.base_url}).")
+    else:
+        print("Jira not configured — Completed Tasks will be blank "
+              "(set JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN in .env to enable).")
 
     entries, texts = fetch_standup_entries(slack_cfg)
     print(f"Fetched {len(entries)} stand-up entr(ies) from the last {LOOKBACK_DAYS} days.")
@@ -286,7 +328,7 @@ def main() -> None:
             print("  Check REASONING_API_KEY / REASONING_MODEL / REASONING_BASE_URL in .env.")
         sys.exit(2)  # exit 2 = "skipped" (backend not configured) — not a hard failure
 
-    rows = build_rows(records, texts)
+    rows = build_rows(records, texts, jira_cfg)
     values = [HEADERS] + rows
 
     csv_path = ROOT / "Result" / "standup_report.csv"

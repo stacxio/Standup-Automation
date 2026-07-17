@@ -43,6 +43,29 @@ class SlackConfig:
 
 
 @dataclass(frozen=True)
+class JiraConfig:
+    """Atlassian Cloud REST credentials, used to check issue status categories.
+
+    Optional: from_env() returns None when any of the three vars is missing, so
+    the report still runs (Picked Tasks stays populated from Slack; Completed
+    Tasks is simply left blank).
+    """
+
+    base_url: str
+    email: str
+    api_token: str
+
+    @classmethod
+    def from_env(cls) -> "JiraConfig | None":
+        base = _env("JIRA_BASE_URL")
+        email = _env("JIRA_EMAIL")
+        token = _env("JIRA_API_TOKEN")
+        if not (base and email and token):
+            return None
+        return cls(base_url=base.rstrip("/"), email=email, api_token=token)
+
+
+@dataclass(frozen=True)
 class ReasoningConfig:
     """Settings for the summarize stage's reasoning engine (SRS Section 8 / 9).
 
