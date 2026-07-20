@@ -49,14 +49,6 @@ HEADERS = [
 # Jira issue keys, e.g. "PROJ-123". Matched case-insensitively then upper-cased.
 _JIRA_ID = re.compile(r"\b[A-Za-z][A-Za-z0-9]+-\d+\b")
 
-NO_CHECKIN = "No check-in"
-STATUS_FILL = {
-    "Completed": "C6EFCE",
-    "In Progress": "FFEB9C",
-    "Blocked": "FFC7CE",
-    NO_CHECKIN: "E7E6E6",
-}
-
 LOOKBACK_DAYS = int(os.environ.get("REPORT_LOOKBACK_DAYS", "30") or 30)
 
 # Markers that identify a real stand-up post (vs. roll-call / leave / chatter).
@@ -139,33 +131,51 @@ def extract_jira_ids(text: str) -> list[str]:
     return list(seen)
 
 
-def _completed_ids(ids: list[str], jira_cfg, cache: dict[str, bool]) -> list[str]:
-    """Subset of `ids` whose Jira status category is 'done' (cached per key)."""
-    out = []
-    for key in ids:
-        if key not in cache:
-            cache[key] = bool(jira.issue_done(jira_cfg, key))
-        if cache[key]:
-            out.append(key)
-    return out
+# Shown in Status when a person checked in but referenced no Jira issue.
+NO_JIRA_ID = "Developer not update the jira Task id."
+# Shown for a key Jira couldn't resolve (not found / no access).
+UNKNOWN_STATUS = "Unknown"
+
+
+def _jira_status(key: str, jira_cfg, cache: dict[str, tuple | None]) -> tuple | None:
+    """(status_name, category) for a Jira key, cached so each key is fetched once."""
+    if key not in cache:
+        cache[key] = jira.issue_status(jira_cfg, key)
+    return cache[key]
 
 
 def build_rows(records: list[dict], texts: dict, jira_cfg=None) -> list[list[str]]:
-    """Turn engine records into deduplicated rows with a derived Status.
+    """Turn engine records into deduplicated rows.
 
-    Picked Tasks are the Jira keys found in that person's posts for the day;
-    Completed Tasks are the subset Jira reports as done (empty when Jira is
-    unconfigured). Both are consolidated per (developer, date) from the combined
-    text, so every row for the same person/day shows the same key lists.
+    Per (developer, date) the Jira keys mentioned in the day's posts are the
+    Picked Tasks. Each key is looked up live in Jira:
+      * Status         -> consolidated "KEY <live status>" for every picked key
+                          (e.g. "WS-174 In Review, WS-175 Done"), or a notice
+                          when no key was mentioned.
+      * Completed Tasks -> the subset whose status category is 'done'.
+    Without Jira configured, Status falls back to the text-derived value and
+    Completed Tasks is blank.
     """
     seen: set[tuple] = set()
     rows: list[list[str]] = []
-    done_cache: dict[str, bool] = {}
+    status_cache: dict[str, tuple | None] = {}
     for r in records:
         combined = texts.get((r["developer"], r["date"]), "")
-        status = _derive_status(combined)
         picked = extract_jira_ids(combined)
-        completed = _completed_ids(picked, jira_cfg, done_cache) if jira_cfg else []
+
+        if not jira_cfg:
+            status, completed = _derive_status(combined), []
+        elif not picked:
+            status, completed = NO_JIRA_ID, []
+        else:
+            parts, completed = [], []
+            for key in picked:
+                st = _jira_status(key, jira_cfg, status_cache)
+                parts.append(f"{key} {st[0] if st else UNKNOWN_STATUS}")
+                if st and st[1] == "done":
+                    completed.append(key)
+            status = ", ".join(parts)
+
         row = [r["developer"], r["date"], r["project"], r["task"], r["value"],
                r["what_got_moved"], r["why_it_matters"], r["blockers"], r["whats_next"],
                status, ", ".join(picked), ", ".join(completed)]
@@ -233,7 +243,7 @@ def push_to_sheets(values: list[list[str]]) -> str | None:
         ws.clear()
         ws.resize(rows=max(len(mvalues) + 5, 10), cols=max(len(HEADERS) + 1, 12))
         ws.update(values=mvalues, range_name="A1", value_input_option="RAW")
-        _apply_formatting(sh, ws, len(mvalues))
+        _apply_formatting(sh, ws)
         written.append((title, len(mvalues) - 1))
 
     # Remove the legacy single tab (e.g. "Sheet1"); keep every month-named tab.
@@ -267,7 +277,7 @@ def _is_month_tab(name: str) -> bool:
         return False
 
 
-def _apply_formatting(sh, ws, total_rows: int) -> None:
+def _apply_formatting(sh, ws) -> None:
     try:
         last_col = chr(ord("A") + len(HEADERS) - 1)
         ws.freeze(rows=1)
@@ -276,20 +286,15 @@ def _apply_formatting(sh, ws, total_rows: int) -> None:
             "backgroundColor": _rgb("1F4E78"),
             "horizontalAlignment": "CENTER",
         })
-        status_col0 = HEADERS.index("Status")
-        rng = {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": total_rows,
-               "startColumnIndex": status_col0, "endColumnIndex": status_col0 + 1}
+        # Status is now free-form per-issue Jira text, so it's no longer colour
+        # coded. Clear any legacy conditional-format rules from earlier runs.
         existing = next(
             (s for s in sh.fetch_sheet_metadata().get("sheets", []) if s["properties"]["sheetId"] == ws.id),
             {},
         ).get("conditionalFormats", [])
-        requests = [{"deleteConditionalFormatRule": {"sheetId": ws.id, "index": 0}} for _ in existing]
-        for text, hex_color in STATUS_FILL.items():
-            requests.append({"addConditionalFormatRule": {"index": 0, "rule": {
-                "ranges": [rng],
-                "booleanRule": {"condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": text}]},
-                                "format": {"backgroundColor": _rgb(hex_color)}}}}})
-        sh.batch_update({"requests": requests})
+        if existing:
+            sh.batch_update({"requests": [
+                {"deleteConditionalFormatRule": {"sheetId": ws.id, "index": 0}} for _ in existing]})
     except Exception as exc:  # noqa: BLE001 — formatting must never fail the data push
         print(f"  (formatting skipped: {exc})")
 
