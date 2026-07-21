@@ -1,8 +1,8 @@
-"""Daily job: refresh attendance (+ Slack notify) and the Daily Status report.
+"""Daily job: refresh attendance, the Daily Status report, and post a summary.
 
-Runs build_attendance.py (--notify) then build_report.py as subprocesses and
-appends their combined output to logs/daily.log. This is what the Windows
-scheduled task invokes.
+Runs build_attendance.py, build_report.py, then daily_summary.py (each
+--notify) as subprocesses and appends their combined output to logs/daily.log.
+This is what the Windows scheduled task invokes.
 
 Run:  .venv/Scripts/python.exe run_daily.py
 """
@@ -21,6 +21,7 @@ LOG = ROOT / "logs" / "daily.log"
 STEPS = [
     ("attendance", ["build_attendance.py", "--notify"]),
     ("report", ["build_report.py", "--notify"]),
+    ("summary", ["daily_summary.py", "--notify"]),
 ]
 
 

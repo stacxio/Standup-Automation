@@ -47,3 +47,26 @@ def issue_done(cfg: JiraConfig, key: str) -> bool | None:
     """Return True/False if the issue's status category is 'done'; None on error."""
     st = issue_status(cfg, key)
     return None if st is None else st[1] == "done"
+
+
+def issue_commented_on(cfg: JiraConfig, key: str, date_iso: str) -> bool | None:
+    """True if the issue has any comment created on `date_iso` (YYYY-MM-DD).
+
+    Returns None on lookup error. Comments are fetched newest-first so a same-day
+    update is seen without paging through the whole history.
+    """
+    url = f"{cfg.base_url}/rest/api/3/issue/{key}/comment?orderBy=-created&maxResults=100"
+    req = urllib.request.Request(
+        url, headers={"Authorization": _auth_header(cfg), "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, ValueError, OSError):
+        return None
+    for comment in data.get("comments", []):
+        # Jira 'created' looks like "2026-07-21T10:15:30.123+0530" — the first 10
+        # chars are the calendar date.
+        if str(comment.get("created", ""))[:10] == date_iso:
+            return True
+    return False
