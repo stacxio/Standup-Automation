@@ -21,7 +21,8 @@ LOG = ROOT / "logs" / "daily.log"
 STEPS = [
     ("attendance", ["build_attendance.py", "--notify"]),
     ("report", ["build_report.py", "--notify"]),
-    ("summary", ["daily_summary.py", "--notify"]),
+    # The summary posts on every run — no --notify needed (it is still accepted).
+    ("summary", ["daily_summary.py"]),
 ]
 
 

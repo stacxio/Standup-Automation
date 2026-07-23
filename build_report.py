@@ -47,7 +47,12 @@ HEADERS = [
 ]
 
 # Jira issue keys, e.g. "PROJ-123". Matched case-insensitively then upper-cased.
-_JIRA_ID = re.compile(r"\b[A-Za-z][A-Za-z0-9]+-\d+\b")
+# Stand-ups are hand-typed, so spaces around the hyphen are common ("HIR - 72",
+# "BHA- 79", "WS - 186") — those are accepted too, but only for keys that look
+# like real project keys (see extract_jira_ids).
+_JIRA_ID = re.compile(r"\b([A-Za-z][A-Za-z0-9]+)[ \t]*-[ \t]*(\d+)\b")
+# Max length of an all-caps project key accepted with spaces around the hyphen.
+_MAX_SPACED_KEY = 10
 
 LOOKBACK_DAYS = int(os.environ.get("REPORT_LOOKBACK_DAYS", "30") or 30)
 
@@ -124,10 +129,19 @@ def _derive_status(text: str) -> str:
 
 
 def extract_jira_ids(text: str) -> list[str]:
-    """Return the unique Jira keys mentioned in `text`, upper-cased, in order."""
+    """Return the unique Jira keys mentioned in `text`, normalised, in order.
+
+    "HIR - 72" and "BHA- 79" normalise to HIR-72 / BHA-79. Spacing is only
+    tolerated for short all-caps keys, so ordinary prose ("Best for page - 2")
+    is not mistaken for an issue id.
+    """
     seen: dict[str, None] = {}
-    for m in _JIRA_ID.findall(text or ""):
-        seen.setdefault(m.upper(), None)
+    for m in _JIRA_ID.finditer(text or ""):
+        key, number = m.group(1), m.group(2)
+        spaced = " " in m.group(0) or "\t" in m.group(0)
+        if spaced and not (key.isupper() and len(key) <= _MAX_SPACED_KEY):
+            continue
+        seen.setdefault(f"{key.upper()}-{number}", None)
     return list(seen)
 
 
