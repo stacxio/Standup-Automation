@@ -1,8 +1,18 @@
 """Daily job: refresh attendance, the Daily Status report, and post a summary.
 
-Runs build_attendance.py, build_report.py, then daily_summary.py (each
---notify) as subprocesses and appends their combined output to logs/daily.log.
-This is what the Windows scheduled task invokes.
+Runs build_attendance.py, build_report.py, then daily_summary.py as subprocesses
+and appends their combined output to logs/daily.log. This is what the Windows
+scheduled task invokes.
+
+Setup reminder (config lives in .env, which is gitignored — not in the repo):
+  * The summary step routes each project's slice to its own Slack channel via
+    SUMMARY_CHANNEL_ROUTES (prefix:channel_id, e.g. "SP:C…,WS:C…,HIR:C…,BHA:C…").
+    Unrouted prefixes and task-less developers fall back to SLACK_CHANNEL_ID.
+  * The bot must be invited (/invite) into every routed channel — it has
+    chat:write but not channels:join, so it cannot add itself. A channel it is
+    not in is skipped with a not_in_channel notice; the other channels still post.
+  * Current routing: SP/WS -> #stacx-coordination, HIR -> #hirocom-cordination,
+    BHA -> #bha-coordination. See .env.example / README for the full contract.
 
 Run:  .venv/Scripts/python.exe run_daily.py
 """
