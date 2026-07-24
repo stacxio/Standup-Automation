@@ -8,7 +8,7 @@ config will be added alongside their modules.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str | None:
@@ -25,13 +25,39 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _parse_routes(raw: str | None) -> dict[str, str]:
+    """Parse 'SP:C0AAA,WS:C0AAA,HIR:C0BBB' into {prefix_upper: channel}.
+
+    Blank entries and malformed pairs (missing ':') are skipped so a typo in
+    one route never breaks the whole run. Prefixes are upper-cased so matching
+    is case-insensitive; channel ids/names are taken verbatim.
+    """
+    routes: dict[str, str] = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        prefix, channel = part.split(":", 1)
+        prefix, channel = prefix.strip().upper(), channel.strip()
+        if prefix and channel:
+            routes[prefix] = channel
+    return routes
+
+
 @dataclass(frozen=True)
 class SlackConfig:
-    """Settings for the fetch stage (SRS Section 9 — Slack)."""
+    """Settings for the fetch stage (SRS Section 9 — Slack).
+
+    `channel_id` is the default channel (SLACK_CHANNEL_ID — #stacx-check-in);
+    it is where fetches read from and where any summary slice with no matching
+    route falls back to. `channel_routes` maps an issue-key prefix (e.g. "HIR")
+    to the coordination channel that prefix's summary should post to.
+    """
 
     bot_token: str
     channel_id: str
     include_threads: bool = True
+    channel_routes: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "SlackConfig":
@@ -39,7 +65,12 @@ class SlackConfig:
             bot_token=_env("SLACK_BOT_TOKEN", required=True),  # type: ignore[arg-type]
             channel_id=_env("SLACK_CHANNEL_ID", required=True),  # type: ignore[arg-type]
             include_threads=_env_bool("SLACK_INCLUDE_THREADS", True),
+            channel_routes=_parse_routes(_env("SUMMARY_CHANNEL_ROUTES")),
         )
+
+    def channel_for_prefix(self, prefix: str) -> str:
+        """Channel for an issue-key prefix, or the default channel if unrouted."""
+        return self.channel_routes.get((prefix or "").upper(), self.channel_id)
 
 
 @dataclass(frozen=True)

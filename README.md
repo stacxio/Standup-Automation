@@ -44,3 +44,19 @@ cp .env.example .env            # fill in secrets (never commit)
 python -m standup_summarizer.run               # today's standup
 python -m standup_summarizer.run --date 2026-06-17   # manual backfill
 ```
+
+### Daily summary
+
+`daily_summary.py` posts a per-developer digest (check-in status, picked/done
+tasks, and each Jira issue's summary/description/branch/commit/PR + comments).
+
+Each developer's tasks are routed by **issue-key prefix** to a project channel
+via `SUMMARY_CHANNEL_ROUTES` (e.g. `SP:C…,WS:C…,HIR:C…,BHA:C…`); several
+prefixes may share a channel. Anything unrouted — an unlisted prefix, or a
+developer who referenced no task — falls back to `SLACK_CHANNEL_ID`. The bot
+must be a member of every target channel.
+
+```bash
+python daily_summary.py            # post to the routed channels
+python daily_summary.py --dry-run  # print the per-channel routing, post nothing
+```

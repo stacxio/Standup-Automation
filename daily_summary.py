@@ -25,10 +25,18 @@ For every team member (the attendance roster) it reports, for TODAY:
     ST-11: no comments                  <- did the developer comment on Jira?
 
 Reuses build_attendance (roster + check-ins) and build_report (Jira ids per
-stand-up), so the definitions stay identical to the two sheets. The digest is
-posted to the check-in channel (SLACK_CHANNEL_ID — #stacx-check-in) on every
-run, as a separate message from the existing per-step notices. Long digests are
+stand-up), so the definitions stay identical to the two sheets.
+
+Routing: each developer's tasks are split by issue-key prefix and posted to the
+matching project channel (SUMMARY_CHANNEL_ROUTES, e.g. "SP:C…,WS:C…,HIR:C…").
+A prefix with no route — and any developer who referenced no task — falls back
+to the default channel (SLACK_CHANNEL_ID, #stacx-check-in). Long slices are
 split into several messages on developer boundaries.
+
+  SUMMARY_CHANNEL_ROUTES=SP:C0AAA,WS:C0AAA,HIR:C0BBB,BHA:C0CCC
+
+The bot must be a member of every target channel (else Slack returns
+'not_in_channel'); a failure on one channel never stops the others.
 
 Run:  .venv/Scripts/python.exe daily_summary.py             # post to Slack
       .venv/Scripts/python.exe daily_summary.py --dry-run   # print only
@@ -277,19 +285,92 @@ def chunk(blocks: list[str], limit: int = SLACK_CHUNK_CHARS) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-def post(cfg: SlackConfig, blocks: list[str]) -> None:
-    """Post the digest to the check-in channel (SLACK_CHANNEL_ID)."""
+# Routing — send each developer's task slice to its project's channel
+# --------------------------------------------------------------------------
+def prefix_of(key: str) -> str:
+    """The project key of an issue id, upper-cased: 'HIR-72' -> 'HIR'."""
+    return key.split("-", 1)[0].upper() if "-" in key else key.upper()
+
+
+def _channel_of(cfg: SlackConfig, key: str) -> str:
+    return cfg.channel_for_prefix(prefix_of(key))
+
+
+def _filter_row(row: dict, channel: str, cfg: SlackConfig) -> dict:
+    """A copy of `row` keeping only the ids whose prefix routes to `channel`.
+
+    picked/jira/comments stay index-aligned; previous and done are filtered by
+    the same channel rule.
+    """
+    keep = [i for i, k in enumerate(row["picked"]) if _channel_of(cfg, k) == channel]
+    return {
+        **row,
+        "previous": [k for k in row["previous"] if _channel_of(cfg, k) == channel],
+        "picked": [row["picked"][i] for i in keep],
+        "done": [k for k in row["done"] if _channel_of(cfg, k) == channel],
+        "jira": [row["jira"][i] for i in keep] if row["jira"] else [],
+        "comments": [row["comments"][i] for i in keep] if row["comments"] else [],
+    }
+
+
+def route_blocks(rows: list[dict], cfg: SlackConfig, today: dt.date,
+                 jira_configured: bool) -> dict[str, list[str]]:
+    """Group developer blocks by target channel.
+
+    Each developer's tasks are split by issue-key prefix; the slice for each
+    project posts to that project's channel (SUMMARY_CHANNEL_ROUTES), with
+    unrouted prefixes and task-less developers falling back to the default
+    channel (SLACK_CHANNEL_ID). Returns {channel: [header, block, ...]}.
+    """
+    header = f"*Daily Stand-up Summary — {today.strftime('%d-%m-%Y')}*"
+    per_channel: dict[str, list[str]] = {}
+
+    def add(channel: str, block: str) -> None:
+        per_channel.setdefault(channel, []).append(block)
+
+    for row in rows:
+        ids = row["picked"] + row["previous"] + row["done"]
+        if not ids:  # nothing routable — keep the check-in signal in the default
+            add(cfg.channel_id, developer_block(row, jira_configured))
+            continue
+        channels: list[str] = []
+        for k in ids:
+            c = _channel_of(cfg, k)
+            if c not in channels:
+                channels.append(c)
+        for channel in channels:
+            add(channel, developer_block(_filter_row(row, channel, cfg), jira_configured))
+
+    return {channel: [header] + blocks for channel, blocks in per_channel.items()}
+
+
+def _channel_label(cfg: SlackConfig, channel: str) -> str:
+    """Human hint for a channel id in dry-run output: which prefixes route to it."""
+    prefixes = sorted(p for p, c in cfg.channel_routes.items() if c == channel)
+    tag = "default / SLACK_CHANNEL_ID" if channel == cfg.channel_id else "routed"
+    joined = ", ".join(prefixes) if prefixes else "—"
+    return f"{channel}  ({tag}; prefixes: {joined})"
+
+
+# --------------------------------------------------------------------------
+def post(cfg: SlackConfig, routed: dict[str, list[str]]) -> None:
+    """Post each channel's blocks; a failure on one channel never stops the rest."""
     client = build_client(cfg.bot_token)
-    for i, text in enumerate(chunk(blocks), start=1):
-        try:
-            resp = client.chat_postMessage(channel=cfg.channel_id, text=text)
-            print(f"\nPosted daily summary part {i} (ts={resp.get('ts')}).")
-        except Exception as exc:  # noqa: BLE001
-            hint = ""
-            if "missing_scope" in str(exc):
-                hint = "  -> Add the 'chat:write' bot scope to the Slack app and reinstall it."
-            print(f"\nSlack post failed: {exc}{hint}")
-            break
+    for channel, blocks in routed.items():
+        for i, text in enumerate(chunk(blocks), start=1):
+            try:
+                resp = client.chat_postMessage(channel=channel, text=text)
+                print(f"Posted to {channel} part {i} (ts={resp.get('ts')}).")
+            except Exception as exc:  # noqa: BLE001
+                hint = ""
+                if "missing_scope" in str(exc):
+                    hint = "  -> Add the 'chat:write' bot scope to the Slack app and reinstall it."
+                elif "not_in_channel" in str(exc):
+                    hint = f"  -> Invite the bot into {channel} (/invite @<bot>)."
+                elif "channel_not_found" in str(exc):
+                    hint = f"  -> Check the channel id for {channel} in SUMMARY_CHANNEL_ROUTES."
+                print(f"Slack post to {channel} failed: {exc}{hint}")
+                break  # skip the rest of THIS channel; continue with the others
 
 
 def main() -> None:
@@ -302,15 +383,20 @@ def main() -> None:
 
     today = dt.date.today()
     rows = gather(cfg, jira_cfg, today)
-    blocks = compose_blocks(rows, today, bool(jira_cfg))
-    print("\n\n".join(blocks))
+    routed = route_blocks(rows, cfg, today, bool(jira_cfg))
+
+    # Preview: show each channel and the slice bound for it.
+    for channel, blocks in routed.items():
+        print(f"\n{'=' * 70}\n>>> {_channel_label(cfg, channel)}\n{'=' * 70}")
+        print("\n\n".join(blocks))
 
     # The digest posts on every run. --dry-run (or DRY_RUN=1) prints only, for
-    # testing. --notify is still accepted so older callers keep working.
+    # testing. --no-notify is accepted as an alias.
     if "--dry-run" in sys.argv or "--no-notify" in sys.argv or os.environ.get("DRY_RUN"):
         print("\nDry run — not posting to Slack.")
         return
-    post(cfg, blocks)
+    print()
+    post(cfg, routed)
 
 
 if __name__ == "__main__":
