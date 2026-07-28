@@ -12,7 +12,7 @@ Setup reminder (config lives in .env, which is gitignored — not in the repo):
     chat:write but not channels:join, so it cannot add itself. A channel it is
     not in is skipped with a not_in_channel notice; the other channels still post.
   * Current routing: SP/WS -> #stacx-coordination, HIR -> #feedback-hirocom,
-    BHA -> #bha-coordination. See .env.example / README for the full contract.
+    BHA -> #feedback-bha. See .env.example / README for the full contract.
 
 Run:  .venv/Scripts/python.exe run_daily.py
 """
