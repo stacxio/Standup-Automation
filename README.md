@@ -60,3 +60,23 @@ must be a member of every target channel.
 python daily_summary.py            # post to the routed channels
 python daily_summary.py --dry-run  # print the per-channel routing, post nothing
 ```
+
+### Stand-up gap audit
+
+`gap_report.py` cross-checks what developers wrote in Slack against what was
+actually said in the Google Meet stand-up. You supply the meeting transcript as
+an Otter text export (or pasted text) — no Otter login or scrape. It fetches
+today's Slack stand-ups, asks the reasoning engine to compare the two, writes a
+`Gap Report` tab to the Daily Status sheet, and posts a summary to
+`SLACK_CHANNEL_ID` (#stacx-check-in).
+
+```bash
+python gap_report.py --transcript meeting.txt            # audit + push + post
+python gap_report.py --transcript meeting.txt --dry-run  # print only
+python gap_report.py --stdin < meeting.txt               # piped transcript
+python gap_report.py --transcript meeting.txt --date 2026-07-28   # backfill
+```
+
+Per developer it reports `in_slack` / `in_meeting`, an assessment (aligned /
+minor gaps / significant gaps / no update), and the specific discrepancies —
+e.g. a blocker raised verbally but not written, or a Slack task never discussed.
