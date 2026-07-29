@@ -89,12 +89,52 @@ def test_no_issues_short_circuits_without_engine_call():
 def test_spoken_keys_attributes_issues_to_the_matching_speaker():
     import verify_standup as vs
 
+    prefixes = {"BHA", "HIR", "WS"}
     segments = [
         {"speaker": "GN", "text": "Recreated the kiosk UI, that's BHA-88, PR raised"},
         {"speaker": "Raghul", "text": "Working on HIR-75 and HIR - 76 today"},
         {"speaker": "", "text": "unattributed chatter mentioning WS-1"},
     ]
-    out = vs.spoken_keys(segments, ["GN", "Soma", "Raghul", "Sahil"])
+    out = vs.spoken_keys(segments, ["GN", "Soma", "Raghul", "Sahil"], prefixes)
     assert out["GN"] == ["BHA-88"]
     assert out["Raghul"] == ["HIR-75", "HIR-76"]  # spaced key normalised too
     assert out["Soma"] == [] and out["Sahil"] == []  # unattributed keys are dropped
+
+
+def test_extract_keys_handles_hyphenless_spoken_ids():
+    import verify_standup as vs
+
+    prefixes = {"SP", "WS"}
+    assert vs.extract_keys("I worked on SP12 today", prefixes) == ["SP-12"]
+    assert vs.extract_keys("finished SP 12 and WS-9", prefixes) == ["WS-9", "SP-12"]
+    assert vs.extract_keys("SP-12 proper", prefixes) == ["SP-12"]  # no dupes
+    # A prefix not among the known projects stays hyphen-only (avoids false hits).
+    assert vs.extract_keys("the room is 12x12", {"SP"}) == []
+
+
+def test_only_dev_attributes_all_transcript_keys():
+    import verify_standup as vs
+
+    segments = [{"speaker": "Speaker 1", "text": "I completed SP12, commit and screenshot added"}]
+    out = vs.spoken_keys(segments, ["Soma"], {"SP"}, only_dev="Soma")
+    assert out["Soma"] == ["SP-12"]  # generic speaker label, still attributed
+
+
+def test_gate_discussed_forces_flag_from_key_mention():
+    import verify_standup as vs
+
+    record = {"issues": [
+        {"key": "SP-12", "discussed": False, "description_reflected": "yes",
+         "comments_reflected": "yes", "acceptance_progress": "yes", "pr_mentioned": "no",
+         "attachments_referenced": "yes", "blocker_mentioned": True, "notes": ["x"]},
+        {"key": "SP-11", "discussed": True, "description_reflected": "yes",  # model hallucination
+         "comments_reflected": "yes", "acceptance_progress": "no", "pr_mentioned": "no",
+         "attachments_referenced": "yes", "blocker_mentioned": False, "notes": ["y"]},
+    ]}
+    out = vs.gate_discussed(record, ["SP-12"])
+    sp12, sp11 = out["issues"]
+    assert sp12["discussed"] is True and sp12["description_reflected"] == "yes"
+    # SP-11 wasn't named -> forced not-discussed, sub-checks reset.
+    assert sp11["discussed"] is False
+    assert sp11["description_reflected"] == "na" and sp11["attachments_referenced"] == "na"
+    assert sp11["blocker_mentioned"] is False and sp11["notes"] == []

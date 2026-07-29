@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -58,14 +59,18 @@ def _matches(a: str, b: str) -> bool:
     return bool(x and y) and (x.startswith(y) or y.startswith(x) or x in y or y in x)
 
 
-def assignee_map(jira_cfg: JiraConfig, roster: list[str]) -> dict[str, str]:
-    """Map roster short name -> Jira accountId, via active-issue assignees."""
-    issues = jira.search_issues(
+def scan_active(jira_cfg: JiraConfig) -> list[dict]:
+    """Recent not-Done issues, carrying assignee + project — one scan, reused."""
+    return jira.search_issues(
         jira_cfg, "statusCategory != Done ORDER BY updated DESC",
-        fields="assignee", max_results=200,
+        fields="assignee,project", max_results=200,
     )
+
+
+def assignee_map(scan: list[dict], roster: list[str]) -> dict[str, str]:
+    """Map roster short name -> Jira accountId from the active-issue assignees."""
     accounts: dict[str, str] = {}  # displayName -> accountId
-    for i in issues:
+    for i in scan:
         a = (i.get("fields", {}) or {}).get("assignee") or {}
         if a.get("accountId") and a.get("displayName"):
             accounts.setdefault(a["displayName"], a["accountId"])
@@ -79,6 +84,28 @@ def assignee_map(jira_cfg: JiraConfig, roster: list[str]) -> dict[str, str]:
     return mapping
 
 
+def project_prefixes(scan: list[dict]) -> set[str]:
+    """Live project keys (e.g. {'SP','WS','HIR','BHA'}) from the active scan."""
+    keys = set()
+    for i in scan:
+        pk = ((i.get("fields", {}) or {}).get("project") or {}).get("key")
+        if pk:
+            keys.add(pk.upper())
+    return keys
+
+
+def extract_keys(text: str, prefixes: set[str]) -> list[str]:
+    """Jira keys in text: the hyphenated form, plus 'SP12'/'SP 12' for known
+    project prefixes (spoken IDs often drop the hyphen)."""
+    keys = list(rep.extract_jira_ids(text))
+    for pre in prefixes:
+        for m in re.finditer(rf"\b{re.escape(pre)}\s*-?\s*0*(\d+)\b", text, re.I):
+            k = f"{pre}-{int(m.group(1))}"
+            if k not in keys:
+                keys.append(k)
+    return keys
+
+
 def assigned_keys(jira_cfg: JiraConfig, account_id: str, since_days: int,
                   max_issues: int) -> list[str]:
     """Keys of the developer's active assigned issues, most-recently updated first."""
@@ -88,24 +115,52 @@ def assigned_keys(jira_cfg: JiraConfig, account_id: str, since_days: int,
     return [h["key"] for h in hits if h.get("key")]
 
 
-def spoken_keys(segments: list[dict], roster: list[str]) -> dict[str, list[str]]:
-    """Per developer, the Jira keys they named in their own transcript turns.
+def spoken_keys(segments: list[dict], roster: list[str], prefixes: set[str],
+                only_dev: str | None = None) -> dict[str, list[str]]:
+    """Per developer, the Jira keys they named in the transcript.
 
-    Attributed by matching each segment's speaker label to a roster name, so an
-    issue a developer actually discussed is verified even if it fell outside the
-    assigned-issue window (and isn't mislabelled 'not in Jira').
+    Normally attributed by matching each segment's speaker label to a roster
+    name, so an issue a developer discussed is verified even if it fell outside
+    the assigned window (and isn't mislabelled 'not in Jira'). With `only_dev`
+    (a single-person check-in where Otter labelled the speaker generically, e.g.
+    'Speaker 1'), every key in the transcript is attributed to that developer.
     """
     out: dict[str, list[str]] = {s: [] for s in roster}
     for seg in segments:
-        if not seg["speaker"]:
-            continue
-        dev = next((d for d in roster if _matches(d, seg["speaker"])), None)
+        if only_dev:
+            dev = only_dev
+        elif seg["speaker"]:
+            dev = next((d for d in roster if _matches(d, seg["speaker"])), None)
+        else:
+            dev = None
         if not dev:
             continue
-        for k in rep.extract_jira_ids(seg["text"]):
+        for k in extract_keys(seg["text"], prefixes):
             if k not in out[dev]:
                 out[dev].append(k)
     return out
+
+
+def gate_discussed(record: dict, mentioned: list[str]) -> dict:
+    """Force 'discussed' from a deterministic signal: was the issue key named?
+
+    Check-ins here always cite the Jira ID, so an issue is discussed iff its key
+    appears in the transcript. This overrides the model, which can otherwise
+    attribute one issue's discussion to a sibling that was never mentioned. A
+    non-discussed issue has its sub-checks reset to 'na'.
+    """
+    named = set(mentioned)
+    for c in record["issues"]:
+        if c["key"] in named:
+            c["discussed"] = True
+        else:
+            c["discussed"] = False
+            for f in ("description_reflected", "comments_reflected", "acceptance_progress",
+                      "pr_mentioned", "attachments_referenced"):
+                c[f] = "na"
+            c["blocker_mentioned"] = False
+            c["notes"] = []
+    return record
 
 
 def build_context(jira_cfg: JiraConfig, keys: list[str]) -> list[dict]:
@@ -261,6 +316,8 @@ def main() -> None:
     src.add_argument("--stdin", action="store_true", help="read the transcript from stdin")
     parser.add_argument("--since-days", type=int, default=3, help="assigned-issue recency window (default 3)")
     parser.add_argument("--max-issues", type=int, default=8, help="max issues per developer (default 8)")
+    parser.add_argument("--developer", metavar="NAME", help="verify only this developer; attribute "
+                        "every transcript key to them (use for a single-person check-in)")
     parser.add_argument("--dry-run", action="store_true", help="print only; do not push/post")
     args = parser.parse_args()
 
@@ -277,10 +334,20 @@ def main() -> None:
 
     cfg = SlackConfig.from_env()
     roster, *_ = att.fetch_channel(cfg)
-    accounts = assignee_map(jira_cfg, roster)
-    mentioned = spoken_keys(segments, roster)
+
+    only_dev = None
+    if args.developer:
+        only_dev = next((d for d in roster if _matches(d, args.developer)), None)
+        if not only_dev:
+            sys.exit(f"--developer {args.developer!r} did not match the roster {roster}.")
+        roster = [only_dev]
+
+    scan = scan_active(jira_cfg)
+    accounts = assignee_map(scan, roster)
+    prefixes = project_prefixes(scan)
+    mentioned = spoken_keys(segments, roster, prefixes, only_dev=only_dev)
     print(f"Roster: {roster}")
-    print(f"Matched Jira accounts: {sorted(accounts)}")
+    print(f"Matched Jira accounts: {sorted(accounts)} | project prefixes: {sorted(prefixes)}")
 
     reasoning = ReasoningConfig.from_env()
     engine = build_engine(reasoning)
@@ -295,10 +362,11 @@ def main() -> None:
         issues = build_context(jira_cfg, keys)
         print(f"  {short}: {len(issues)} issue(s) -> {[i['key'] for i in issues]}")
         try:
-            records.append(verify.verify_developer(short, issues, transcript_text, engine, reasoning.max_retries))
+            record = verify.verify_developer(short, issues, transcript_text, engine, reasoning.max_retries)
         except Exception as exc:  # noqa: BLE001
             print(f"\nReasoning engine unavailable — {type(exc).__name__}: {exc}")
             sys.exit(2)
+        records.append(gate_discussed(record, mentioned.get(short, [])))
 
     text = compose(records, transcript.speakers(segments))
     print("\n" + text)
