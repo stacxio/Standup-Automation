@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .config import JiraConfig
@@ -76,11 +77,15 @@ def issue_detail(cfg: JiraConfig, key: str) -> dict | None:
     `description` is the flattened description text ("" when the field is
     empty). Returns None if the issue can't be read (not found / no access).
     """
-    data = _get(cfg, f"{cfg.base_url}/rest/api/3/issue/{key}?fields=summary,description,status")
+    fields_param = "summary,description,status,assignee,priority,attachment"
+    data = _get(cfg, f"{cfg.base_url}/rest/api/3/issue/{key}?fields={fields_param}")
     if data is None:
         return None
     fields = data.get("fields", {}) or {}
     status = fields.get("status", {}) or {}
+    assignee = fields.get("assignee") or {}
+    priority = fields.get("priority") or {}
+    attachments = [a.get("filename", "") for a in (fields.get("attachment") or []) if a.get("filename")]
     return {
         "id": str(data.get("id", "") or ""),
         "key": data.get("key", key) or key,
@@ -88,6 +93,10 @@ def issue_detail(cfg: JiraConfig, key: str) -> dict | None:
         "description": adf_to_text(fields.get("description")).strip(),
         "status_name": status.get("name", "") or "",
         "status_category": (status.get("statusCategory", {}) or {}).get("key", "") or "",
+        "assignee": assignee.get("displayName", "") or "",
+        "assignee_id": assignee.get("accountId", "") or "",
+        "priority": priority.get("name", "") or "",
+        "attachments": attachments,
     }
 
 
@@ -213,3 +222,31 @@ def issue_dev_info(cfg: JiraConfig, issue_id: str) -> dict:
     info["commits"] = list(commits)
     info["pull_requests"] = list(prs.values())
     return info
+
+
+# --------------------------------------------------------------------------
+# JQL search (issues assigned to a developer, etc.)
+# --------------------------------------------------------------------------
+def search_issues(cfg: JiraConfig, jql: str, fields: str = "summary,status,assignee,priority",
+                  max_results: int = 100) -> list[dict]:
+    """Return matching issues [{id, key, fields}] via /rest/api/3/search/jql.
+
+    The classic /search endpoint was removed by Atlassian; this uses the
+    token-paginated /search/jql replacement. Returns [] on any error so a Jira
+    hiccup never fails the run.
+    """
+    base = f"{cfg.base_url}/rest/api/3/search/jql"
+    out: list[dict] = []
+    token: str | None = None
+    while len(out) < max_results:
+        params = {"jql": jql, "maxResults": min(100, max_results - len(out)), "fields": fields}
+        if token:
+            params["nextPageToken"] = token
+        data = _get(cfg, base + "?" + urllib.parse.urlencode(params))
+        if not data:
+            break
+        out.extend(data.get("issues", []) or [])
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    return out[:max_results]

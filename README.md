@@ -80,3 +80,27 @@ python gap_report.py --transcript meeting.txt --date 2026-07-28   # backfill
 Per developer it reports `in_slack` / `in_meeting`, an assessment (aligned /
 minor gaps / significant gaps / no update), and the specific discrepancies —
 e.g. a blocker raised verbally but not written, or a Slack task never discussed.
+
+### Stand-up verification (Jira vs meeting)
+
+`verify_standup.py` is the Scrum-Master audit: instead of Slack, it compares each
+developer's **Jira context** against the meeting. For every roster developer it
+collects their active assigned issues (summary, status, priority, description
+with acceptance criteria, latest comments, attachment names, pull requests) plus
+any issue they name in their transcript turn, then asks the engine to verify
+coverage.
+
+```bash
+python verify_standup.py --transcript meeting.txt            # audit + push + post
+python verify_standup.py --transcript meeting.txt --dry-run  # print only
+python verify_standup.py --transcript m.txt --since-days 5 --max-issues 10
+```
+
+Per issue it checks discussed / description / comments / acceptance-criteria /
+PR / attachments / blocker, then gives a coverage score, overall status, work
+mentioned that isn't in Jira, and a recommendation. It writes a `Standup
+Verification` tab to the Daily Status sheet and posts to `SLACK_CHANNEL_ID`.
+Scope: assigned issues that aren't Done and were updated within `--since-days`
+(default 3), capped at `--max-issues` (default 8), plus any issue named in the
+meeting. Acceptance criteria are read from the description (no dedicated field);
+attachments are matched by filename only.
