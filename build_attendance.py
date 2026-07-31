@@ -56,11 +56,27 @@ COLOURS = {
 HEADER_BG = "1F4E78"
 
 STATUS_MARKERS = (
-    "what is task", "what got moved", "what is moved", "what's next", "whats next",
+    "what is task", "what got moved", "what is moved", "what got done",
+    "what's next", "whats next",
     "why it matters", "blockers", "project:", "date:", "value:", "task:",
 )
 
 _ROLLCALL_LINE = re.compile(r"^\s*([A-Za-z][\w .]*?)\s*[-–—:]\s*(.+?)\s*$")
+
+# A roll-call entry is "Name-Status": a short name and a short status token
+# ("Present(Full Day)", "Absent", "Half day") — never prose. Stand-up posts are
+# full of "Label: sentence" lines, so without these bounds a line like
+# "What value will it add: ... on behalf of ..." parses as an attendance entry
+# (be-HALF) and invents a team member.
+MAX_NAME_WORDS = 3
+MAX_STATUS_CHARS = 30
+
+# Word-boundary matches, so "behalf"/"presentation"/"absentee" do not count.
+_ATTENDANCE_WORDS = (
+    ("Absent", re.compile(r"\babsent\b")),
+    ("Half Day", re.compile(r"\bhalf\b")),
+    ("Present", re.compile(r"\bpresent\b")),
+)
 _DATE = re.compile(r"(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})")
 _DATE_ABBR = re.compile(r"(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})")
 _MONTHS = {m.upper(): i for i, m in enumerate(calendar.month_abbr) if m}
@@ -70,14 +86,27 @@ _MONTHS = {m.upper(): i for i, m in enumerate(calendar.month_abbr) if m}
 # Parsing helpers
 # --------------------------------------------------------------------------
 def _attendance_of(text: str) -> str | None:
+    """The attendance label in a roll-call status token, else None."""
+    text = text.strip()
+    if len(text) > MAX_STATUS_CHARS:      # prose, not a status token
+        return None
     low = text.lower()
-    if "absent" in low:
-        return "Absent"
-    if "half" in low:
-        return "Half Day"
-    if "present" in low:
-        return "Present"
+    for label, pattern in _ATTENDANCE_WORDS:
+        if pattern.search(low):
+            return label
     return None
+
+
+def _rollcall_entry(line: str) -> tuple[str, str] | None:
+    """Parse "Soma-Present(Full Day)" into ("Soma", "Present"); None if not one."""
+    m = _ROLLCALL_LINE.match(line)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    if len(name.split()) > MAX_NAME_WORDS:   # a stand-up field label, not a name
+        return None
+    att = _attendance_of(m.group(2))
+    return (name, att) if att else None
 
 
 def _parse_date(text: str) -> dt.date | None:
@@ -157,9 +186,8 @@ def fetch_channel(cfg: SlackConfig):
         author = fetcher._resolve_name(msg["user"])
         entries = []
         for line in text.splitlines():
-            m = _ROLLCALL_LINE.match(line)
-            if m and (att := _attendance_of(m.group(2))):
-                entries.append((m.group(1).strip(), att))
+            if entry := _rollcall_entry(line):
+                entries.append(entry)
         parsed.append((post_date, author, text, entries))
         for short, _ in entries:
             name_map.setdefault(short.lower().replace(" ", ""), short)

@@ -62,7 +62,13 @@ _STANDUP_MARKERS = (
     "why it matters", "blockers", "project:", "date:", "value:", "task:", "moved:",
 )
 # Attendance roll-call lines, e.g. "GN-Present(Full Day)" — excluded from the report.
-_ROLLCALL_LINE = re.compile(r"^\s*[A-Za-z][\w .]*?\s*[-–—:]\s*.*(present|absent|half\s*day)", re.I)
+# Bounded name + status and word-boundary keywords, matching build_attendance's
+# rule: an unbounded ".*(present|half)" also matches stand-up prose ("...on
+# behalf of...", "...the presentation..."), which would drop a real stand-up.
+_ROLLCALL_LINE = re.compile(
+    r"^\s*[A-Za-z][\w .]{0,20}?\s*[-–—:]\s*[^\n]{0,30}?\b(present|absent|half\s*day)\b",
+    re.I,
+)
 
 
 # --------------------------------------------------------------------------
