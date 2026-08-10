@@ -313,12 +313,17 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
 
 
 # Employee master (seeded once into the "Master" tab; edit it in the sheet after).
-MASTER_HEADERS = ["Name", "Employee ID", "Designation", "Gross Salary"]
+# Date of Joining is documentation for whoever reads the sheet — nothing parses
+# it, and it sits after Gross Salary so read_master()'s positional columns hold.
+MASTER_HEADERS = ["Name", "Employee ID", "Designation", "Gross Salary", "Date of Joining"]
 MASTER_SEED = [
-    ["GN", 1234, "Engineer", 50000],
-    ["Soma", 9999, "Engineer", 50000],
-    ["Raghul", 6666, "Engineer", 50000],
-    ["Sahil", 3333, "Engineer", 50000],
+    ["GN", 1234, "Engineer", 50000, ""],
+    ["Soma", 9999, "Engineer", 50000, ""],
+    ["Raghul", 6666, "Engineer", 50000, ""],
+    ["Sahil", 3333, "Engineer", 50000, ""],
+    ["Gokul", "", "", "", "03-Aug-2026"],
+    ["Mallesh", "", "", "", "03-Aug-2026"],
+    ["Madhan", "", "", "", "03-Aug-2026"],
 ]
 
 
@@ -353,7 +358,7 @@ def ensure_master(sh) -> None:
             "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}}},
             "fields": "userEnteredFormat.numberFormat"}},
         {"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 4},
+            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5},
             "properties": {"pixelSize": 130}, "fields": "pixelSize"}},
     ]})
 
