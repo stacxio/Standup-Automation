@@ -97,6 +97,86 @@ class JiraConfig:
 
 
 @dataclass(frozen=True)
+class OtterConfig:
+    """How the archive agent gets meetings out of Otter.
+
+    Otter exposes two very different doors, and they suit different plans:
+
+      * ``official`` — the Otter **Public API** (Bearer key). Documented and
+        stable, but only enabled for Enterprise workspaces: ask your account
+        manager, then Integrations -> Developer -> Create key.
+      * ``web`` — the internal API the otter.ai web app itself calls, driven
+        with your account email/password. Works on any plan, but it is
+        unofficial and Otter can change or block it without notice.
+
+    Both base URLs are configuration rather than code, so if Otter moves an
+    endpoint the fix is a `.env` edit. `from_env()` returns None when the
+    selected backend has no credentials — the archive agent then falls back to
+    the inbox source (files you export by hand), which needs no login at all.
+    """
+
+    backend: str  # official | web
+    api_key: str | None = None
+    email: str | None = None
+    password: str | None = None
+    api_base: str = "https://api.otter.ai/v1"
+    web_base: str = "https://otter.ai/forward/api/v1"
+    workspace_id: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "OtterConfig | None":
+        backend = (_env("OTTER_BACKEND", "official") or "official").strip().lower()
+        api_key = _env("OTTER_API_KEY")
+        email, password = _env("OTTER_EMAIL"), _env("OTTER_PASSWORD")
+        if backend == "official" and not api_key:
+            return None
+        if backend == "web" and not (email and password):
+            return None
+        if backend not in {"official", "web"}:
+            return None
+        return cls(
+            backend=backend,
+            api_key=api_key,
+            email=email,
+            password=password,
+            api_base=(_env("OTTER_API_BASE", "https://api.otter.ai/v1") or "").rstrip("/"),
+            web_base=(_env("OTTER_WEB_BASE", "https://otter.ai/forward/api/v1") or "").rstrip("/"),
+            workspace_id=_env("OTTER_WORKSPACE_ID"),
+        )
+
+
+@dataclass(frozen=True)
+class ArchiveConfig:
+    """Where the meeting archive lives in Drive and how meetings map to projects.
+
+    `project_names` maps a Jira issue-key prefix to the archive's project folder
+    (several prefixes may share one, exactly like SUMMARY_CHANNEL_ROUTES routes
+    SP and WS to the same channel). A meeting whose transcript names no known
+    prefix is filed under `default_project`.
+    """
+
+    root_name: str = "Meeting Archive"
+    root_folder_id: str | None = None
+    project_names: dict[str, str] = field(default_factory=dict)
+    default_project: str = "General"
+    keep_audio: bool = True
+
+    @classmethod
+    def from_env(cls) -> "ArchiveConfig":
+        return cls(
+            root_name=_env("DRIVE_ARCHIVE_FOLDER", "Meeting Archive"),  # type: ignore[arg-type]
+            root_folder_id=(_env("DRIVE_ARCHIVE_FOLDER_ID") or None),
+            project_names=_parse_routes(_env("ARCHIVE_PROJECT_NAMES")),
+            default_project=_env("ARCHIVE_DEFAULT_PROJECT", "General"),  # type: ignore[arg-type]
+            keep_audio=_env_bool("ARCHIVE_KEEP_AUDIO", True),
+        )
+
+    def project_for_prefix(self, prefix: str) -> str | None:
+        """Archive project folder for an issue-key prefix, or None if unrouted."""
+        return self.project_names.get((prefix or "").upper())
+
+
+@dataclass(frozen=True)
 class ReasoningConfig:
     """Settings for the summarize stage's reasoning engine (SRS Section 8 / 9).
 

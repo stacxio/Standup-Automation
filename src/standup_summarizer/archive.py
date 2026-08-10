@@ -1,0 +1,252 @@
+"""Filing rules for the meeting archive — where a meeting goes and what it says.
+
+This module is deliberately pure: no Drive, Sheets, Slack or Otter calls, just
+the decisions that turn a `Meeting` into a folder path, a set of documents, an
+index row and a Slack notice. `archive_meetings.py` supplies the I/O.
+
+Layout in Drive (one folder per meeting, so the artifacts stay together):
+
+    <root>/<Project>/<Year>/<YYYY-MM-DD>_<slug>/
+        recording.<ext>     the Otter audio
+        transcript.txt      Otter-format text (feeds gap_report / verify_standup)
+        ai-summary.md       Otter's AI summary, outline, insights, action items
+        notes.md            discussion notes — pre-filled, for the team to edit
+        meta.json           machine-readable record; also the "already archived"
+                            marker that makes re-runs idempotent
+
+The project is inferred from the Jira issue keys spoken in the meeting, reusing
+the same prefix convention that routes the daily summary to project channels.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+
+# The 'Meeting Archive' tab on the Daily Status sheet.
+INDEX_HEADERS = [
+    "Date", "Project", "Meeting", "Duration", "Attendees", "Jira Keys",
+    "Also Mentions", "Recording", "Transcript", "Summary", "Notes", "Folder",
+    "Meeting ID", "Archived",
+]
+ID_COLUMN = INDEX_HEADERS.index("Meeting ID")
+DATE_COLUMN = INDEX_HEADERS.index("Date")
+
+RECORDING = "recording"
+TRANSCRIPT = "transcript.txt"
+SUMMARY = "ai-summary.md"
+NOTES = "notes.md"
+META = "meta.json"
+
+_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(text: str, max_len: int = 60) -> str:
+    """Lower-case, hyphenated, filesystem- and Drive-safe folder name fragment."""
+    slug = _SLUG_STRIP.sub("-", (text or "").lower()).strip("-")
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug or "meeting"
+
+
+# --------------------------------------------------------------------------
+# Which project does this meeting belong to?
+# --------------------------------------------------------------------------
+def detect_project(keys: list[str], project_names: dict[str, str],
+                   default: str = "General") -> tuple[str, list[str]]:
+    """Return (project, every_project_mentioned) from the Jira keys named.
+
+    The project with the most mentions wins, so a meeting is filed where most
+    of its work actually lives; ties go to whichever was mentioned first. Keys
+    whose prefix has no mapping are ignored (they cannot name a folder), and a
+    meeting that named nothing recognisable is filed under `default`.
+
+    The second value lists every project mentioned, in first-appearance order —
+    the caller uses it to cross-link a meeting that spanned several projects
+    and to notify each project's channel.
+    """
+    order: list[str] = []
+    counts: dict[str, int] = {}
+    for key in keys:
+        prefix = str(key).split("-", 1)[0].upper()
+        project = project_names.get(prefix)
+        if not project:
+            continue
+        if project not in counts:
+            order.append(project)
+        counts[project] = counts.get(project, 0) + 1
+    if not counts:
+        return default, []
+    best = max(order, key=lambda p: (counts[p], -order.index(p)))
+    return best, order
+
+
+def folder_segments(project: str, day: dt.date, title: str) -> list[str]:
+    """Drive path under the archive root: [Project, Year, YYYY-MM-DD_slug]."""
+    return [project, str(day.year), f"{day.isoformat()}_{slugify(title)}"]
+
+
+# --------------------------------------------------------------------------
+# Documents written into the meeting folder
+# --------------------------------------------------------------------------
+def summary_doc(meeting, project: str, keys: list[str]) -> str:
+    """Otter's AI summary as markdown, with the facts we can state ourselves.
+
+    Written even when Otter returned no summary, so every meeting folder has
+    the same shape and the header facts (date, attendees, issues) are always
+    present for someone browsing the archive.
+    """
+    lines = [
+        f"# {meeting.title}",
+        "",
+        f"- **Date:** {meeting.date.isoformat()} ({meeting.started.strftime('%H:%M')})",
+        f"- **Duration:** {meeting.duration_hms}",
+        f"- **Project:** {project}",
+    ]
+    if meeting.attendees:
+        lines.append(f"- **Attendees:** {', '.join(meeting.attendees)}")
+    if keys:
+        lines.append(f"- **Jira issues discussed:** {', '.join(keys)}")
+    lines += ["", "## AI summary", ""]
+    lines.append(meeting.summary.strip() if meeting.summary
+                 else "_Otter returned no AI summary for this meeting._")
+    if meeting.action_items:
+        lines += ["", "## Action items", ""]
+        lines += [f"- [ ] {item}" for item in meeting.action_items]
+    lines += ["", "---", "",
+              f"_Generated by the archive agent from {meeting.source}. "
+              f"Otter's summary is AI-generated — treat it as a reading aid, "
+              f"not the record of what was agreed._"]
+    return "\n".join(lines) + "\n"
+
+
+def notes_doc(meeting, project: str, keys: list[str]) -> str:
+    """A discussion-notes stub for the team to edit in place.
+
+    Pre-filled with the meeting's facts and Otter's action items so the cost of
+    keeping notes is editing rather than typing; the headings are fixed so the
+    archive reads consistently across projects and years.
+    """
+    lines = [
+        f"# Discussion notes — {meeting.title}",
+        "",
+        f"**Date:** {meeting.date.isoformat()}  |  **Project:** {project}  |  "
+        f"**Duration:** {meeting.duration_hms}",
+        f"**Attendees:** {', '.join(meeting.attendees) if meeting.attendees else '_to fill in_'}",
+        "",
+        "> Written by the archive agent. Edit this file directly — it is never",
+        "> overwritten by a later run.",
+        "",
+        "## Decisions",
+        "",
+        "- _to fill in_",
+        "",
+        "## Discussion",
+        "",
+        "- _to fill in_",
+        "",
+        "## Follow-ups",
+        "",
+    ]
+    lines += ([f"- [ ] {item}" for item in meeting.action_items]
+              if meeting.action_items else ["- [ ] _to fill in_"])
+    lines += ["", "## Related Jira issues", ""]
+    lines += ([f"- {key}" for key in keys] if keys else ["- _none referenced_"])
+    return "\n".join(lines) + "\n"
+
+
+def build_meta(meeting, project: str, keys: list[str], links: dict,
+               *, projects: list[str], archived_at: dt.datetime) -> dict:
+    """The machine-readable record — also the marker that says 'already done'.
+
+    `archive_meetings.py` treats the presence of meta.json in a meeting folder
+    as proof the meeting was archived, so a re-run skips it instead of
+    re-uploading the recording (NFR-4: re-runs are idempotent).
+    """
+    return {
+        "meeting_id": meeting.id,
+        "title": meeting.title,
+        "date": meeting.date.isoformat(),
+        "started_at": meeting.started.isoformat(),
+        "duration_sec": int(meeting.duration_sec or 0),
+        "duration": meeting.duration_hms,
+        "project": project,
+        "also_mentions": [p for p in projects if p != project],
+        "jira_keys": keys,
+        "attendees": meeting.attendees,
+        "source": meeting.source,
+        "artifacts": links,
+        "archived_at": archived_at.isoformat(),
+        "schema": 1,
+    }
+
+
+# --------------------------------------------------------------------------
+# Index (the 'Meeting Archive' sheet tab) and the Slack notice
+# --------------------------------------------------------------------------
+def index_row(meta: dict) -> list[str]:
+    """One sheet row per meeting, column-aligned with INDEX_HEADERS."""
+    artifacts = meta.get("artifacts", {}) or {}
+
+    def link(name: str) -> str:
+        return (artifacts.get(name) or {}).get("url", "")
+
+    return [
+        meta["date"],
+        meta["project"],
+        meta["title"],
+        meta.get("duration", ""),
+        ", ".join(meta.get("attendees") or []),
+        ", ".join(meta.get("jira_keys") or []),
+        ", ".join(meta.get("also_mentions") or []),
+        link(RECORDING),
+        link(TRANSCRIPT),
+        link(SUMMARY),
+        link(NOTES),
+        link("folder"),
+        meta["meeting_id"],
+        (meta.get("archived_at") or "")[:19].replace("T", " "),
+    ]
+
+
+def merge_index(existing: list[list[str]], new_rows: list[list[str]]) -> list[list[str]]:
+    """Upsert `new_rows` into `existing` by Meeting ID, newest meeting first.
+
+    The tab is the team's browsable history, so it accumulates across runs
+    rather than being replaced; keying on the meeting id means re-archiving a
+    meeting corrects its row instead of adding a duplicate.
+    """
+    rows = [list(r) for r in existing if r and len(r) > ID_COLUMN and r[ID_COLUMN]]
+    by_id = {r[ID_COLUMN]: i for i, r in enumerate(rows)}
+    for row in new_rows:
+        key = row[ID_COLUMN]
+        if key in by_id:
+            rows[by_id[key]] = row
+        else:
+            by_id[key] = len(rows)
+            rows.append(row)
+    rows.sort(key=lambda r: r[DATE_COLUMN], reverse=True)
+    return rows
+
+
+def compose_slack(metas: list[dict], project: str) -> str:
+    """The per-project 'archived' notice posted to that project's channel."""
+    plural = "s" if len(metas) != 1 else ""
+    lines = [f"*Meeting archive — {project}* · {len(metas)} meeting{plural} filed", ""]
+    for meta in sorted(metas, key=lambda m: m["date"], reverse=True):
+        artifacts = meta.get("artifacts", {}) or {}
+        folder = (artifacts.get("folder") or {}).get("url", "")
+        head = f"*{meta['date']}* — {meta['title']} ({meta.get('duration', '?')})"
+        lines.append(f"<{folder}|{head}>" if folder else head)
+        if meta.get("attendees"):
+            lines.append(f"  • Attendees: {', '.join(meta['attendees'])}")
+        if meta.get("jira_keys"):
+            lines.append(f"  • Issues: {', '.join(meta['jira_keys'])}")
+        parts = [f"<{(artifacts.get(name) or {}).get('url')}|{label}>"
+                 for name, label in ((RECORDING, "recording"), (TRANSCRIPT, "transcript"),
+                                     (SUMMARY, "summary"), (NOTES, "notes"))
+                 if (artifacts.get(name) or {}).get("url")]
+        if parts:
+            lines.append("  • " + " · ".join(parts))
+        lines.append("")
+    return "\n".join(lines).rstrip()

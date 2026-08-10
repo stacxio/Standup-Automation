@@ -93,6 +93,61 @@ def upsert_file(svc, path, folder_id: str, mime: str = "application/pdf") -> tup
     return created["id"], "created"
 
 
+def ensure_path(svc, segments: list[str], parent: str | None = None) -> str:
+    """Create/reuse each folder in `segments` in order; return the leaf's id.
+
+    Lets a caller ask for "Meeting Archive/STACX/2026/2026-08-06_standup" in one
+    call without caring which parts already exist.
+    """
+    folder_id = parent
+    for name in segments:
+        folder_id = find_or_create_folder(svc, name, folder_id)
+    return folder_id  # type: ignore[return-value]
+
+
+def find_file(svc, name: str, folder_id: str) -> str | None:
+    """Id of the file named `name` in `folder_id`, or None."""
+    q = f"name = '{_escape(name)}' and '{folder_id}' in parents and trashed = false"
+    found = svc.files().list(q=q, fields="files(id)", pageSize=1).execute().get("files", [])
+    return found[0]["id"] if found else None
+
+
+def upsert_bytes(svc, name: str, data: bytes, folder_id: str,
+                 mime: str = "text/plain") -> tuple[str, str]:
+    """Upload in-memory `data` as `name`, replacing any same-named file.
+
+    The byte-oriented twin of upsert_file(), for content the caller generated
+    rather than read from disk (transcripts, summaries, meta.json). Uploads are
+    resumable so a large recording survives a slow link.
+    """
+    from googleapiclient.http import MediaIoBaseUpload
+    import io
+
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime, resumable=len(data) > 5_000_000)
+    existing = find_file(svc, name, folder_id)
+    if existing:
+        svc.files().update(fileId=existing, media_body=media).execute()
+        return existing, "updated"
+    created = svc.files().create(
+        body={"name": name, "parents": [folder_id]}, media_body=media, fields="id"
+    ).execute()
+    return created["id"], "created"
+
+
+def file_link(svc, file_id: str) -> str:
+    """Shareable webViewLink for a file or folder ('' if Drive withholds one)."""
+    try:
+        meta = svc.files().get(fileId=file_id, fields="webViewLink").execute()
+        return meta.get("webViewLink", "")
+    except Exception:  # noqa: BLE001 — a missing link must not fail an upload
+        return ""
+
+
+def _escape(name: str) -> str:
+    """Escape a name for a Drive query string literal."""
+    return name.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def delete_by_name(svc, name: str, folder_id: str) -> int:
     """Delete every file named `name` in `folder_id`. Returns count deleted."""
     q = f"name = '{name}' and '{folder_id}' in parents and trashed = false"

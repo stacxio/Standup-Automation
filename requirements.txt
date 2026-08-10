@@ -3,6 +3,9 @@ slack_sdk
 slack_bolt          # /leave Socket Mode form app
 websocket-client    # stable Socket Mode transport
 
+# Otter API client (meeting archive)
+requests
+
 # Google Sheets / Drive
 gspread
 google-auth

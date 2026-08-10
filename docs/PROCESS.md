@@ -14,10 +14,11 @@ by the summarize / gap / verify agents.
 | **Slack — #stacx-check-in** | Developers post roll-calls (`GN-Present`), daily stand-ups, and leave messages. This is the primary input channel and the summary fallback. |
 | **Slack — #feedback-stacx / #feedback-hirocom / #feedback-bha** | Per-project routing targets for the daily digest. |
 | **Jira (stacx24team.atlassian.net)** | Issue status, description, comments, assignee, priority, attachments, and dev-panel branch/commit/PR. |
-| **Otter.ai export** | Google Meet stand-up transcript, supplied as a `.txt` export/paste (method A — no login/scrape). |
+| **Otter.ai export** | Google Meet stand-up transcript, supplied as a `.txt` export/paste (method A — no login/scrape). Used by the two audit agents. |
+| **Otter.ai API** | Recordings, transcripts and AI summaries pulled by the archive agent — Public API (Bearer key, Enterprise) or the unofficial web API, with a hand-export inbox as fallback. |
 | **Google Sheets — Attendance** (`1W3H2u…4sOI`) | Master, Summary, month tabs, Leaves. |
-| **Google Sheets — Daily Status** (`1j87qp…4ZzM`) | Month tabs, Gap Report, Standup Verification. |
-| **Google Drive** | Payslip PDFs (optional upload). |
+| **Google Sheets — Daily Status** (`1j87qp…4ZzM`) | Month tabs, Gap Report, Standup Verification, Meeting Archive. |
+| **Google Drive** | Payslip PDFs (optional upload); the **meeting archive** (recordings, transcripts, summaries, notes) under `DRIVE_ARCHIVE_FOLDER`. |
 
 All credentials and channel IDs live in the **gitignored `.env`** (`.env.example`
 documents every variable).
@@ -85,7 +86,38 @@ documents every variable).
   #stacx-check-in.
 - **Scope knobs:** `--since-days` (default 3), `--max-issues` (default 8).
 
-### 2.3 Supporting / standalone agents
+### 2.3 Knowledge-retention agents
+
+#### `archive_meetings.py` — Meeting archive agent
+- **Role:** builds the team's durable, per-project record of meetings for
+  knowledge sharing, onboarding, compliance and audit.
+- **Input:** meetings from Otter via one of three sources (`OTTER_BACKEND`):
+  `official` (Public API, Bearer key, Enterprise workspaces), `web` (the
+  unofficial internal API, email/password, any plan), or `--inbox DIR` (files
+  you exported by hand — no login, cannot break).
+- **Routing:** the project is inferred from the Jira issue keys spoken in the
+  meeting via `ARCHIVE_PROJECT_NAMES` (prefix → project folder; several
+  prefixes may share one). Most mentions wins, ties go to first mention,
+  unmatched meetings land in `ARCHIVE_DEFAULT_PROJECT`. `--project` overrides.
+- **Writes (Drive):** `<root>/<Project>/<Year>/<YYYY-MM-DD>_<slug>/` containing
+  `recording.<ext>`, `transcript.txt` (Otter format, so the audit agents can
+  consume it), `ai-summary.md`, `notes.md` and `meta.json`. Uses the **OAuth**
+  Drive credentials, not the service account.
+- **Writes (Sheets):** upserts one row per meeting into the `Meeting Archive`
+  tab of the Daily Status sheet — the browsable index. It accumulates across
+  runs rather than being replaced.
+- **Slack:** posts the artifact links to the project's channel, reusing
+  `SUMMARY_CHANNEL_ROUTES` rather than a second mapping.
+- **Idempotency:** a meeting folder holding `meta.json` is skipped unless
+  `--force`; `notes.md` is never overwritten once it exists, so team edits
+  survive. Index rows upsert by meeting id. Jira keys are ordered by position
+  in the transcript, so a re-run cannot silently re-file a meeting under a
+  different project.
+- **Flags:** `--since-days` (default 1), `--date`, `--project`, `--inbox`,
+  `--limit` (default 25), `--no-audio`, `--force`, `--dry-run`.
+- **Note:** on-demand / scheduled separately — `run_daily.py` does not run it.
+
+### 2.4 Supporting / standalone agents
 
 #### `leave_app.py` — Leave form agent (Socket Mode, long-running)
 - **Trigger:** the `/leave` slash command opens a modal (From, To, Leave type).
@@ -116,6 +148,8 @@ These modules are the reusable machinery the agents call (not run directly):
 | `engines/` | Pluggable **reasoning engine** — `local` (OpenAI-compatible/Ollama) or `hosted` (Anthropic). The only AI agent; called by summarize/gap/verify. |
 | `summarize.py` | Turn stand-up notes into structured records (one batched engine call). |
 | `transcript.py` | Parse an Otter export into `{speaker, text}` segments. |
+| `otter.py` | Pull meetings from Otter — Public API / unofficial web API / inbox — normalised onto one `Meeting` shape. Renders transcripts back into Otter export format so `transcript.py` handles them unchanged. |
+| `archive.py` | Pure filing rules for the archive: project detection, folder paths, the generated documents, index upsert, Slack notice. No I/O. |
 | `gap.py` | Slack-vs-transcript comparison logic. |
 | `verify.py` | Jira-vs-transcript Scrum-Master verification logic. |
 | `sheets.py`, `models.py`, `run.py`, `cli.py` | Sheets upsert, data shapes, and a standalone fetch/summarize entry point. |
@@ -144,6 +178,11 @@ verify_standup.py --transcript otter.txt [--developer NAME]
 gap_report.py --transcript otter.txt
       │  (Slack stand-ups + reasoning engine)
       ▼  Gap Report tab + #stacx-check-in
+
+archive_meetings.py [--since-days N | --date D] [--inbox DIR]
+      │  (Otter API or hand exports -> Drive, by project)
+      ▼  Drive <Project>/<Year>/<date>_<slug>/ + Meeting Archive tab
+      ▼  links posted to the project's channel
 ```
 
 ---
@@ -153,8 +192,17 @@ gap_report.py --transcript otter.txt
 - **Scheduled task** `StacxAttendanceDaily`: weekdays 18:00 IST, 1-hour execution
   limit, battery guards off. Runs only while the user is logged in (interactive
   logon).
-- **Transcript ingestion is method A** — you paste/export the Otter transcript; no
-  Otter login or scraping.
+- **Transcript ingestion for the audit agents is method A** — you paste/export the
+  Otter transcript; no Otter login or scraping. The archive agent is the one
+  exception: it authenticates to Otter to pull recordings, which a paste cannot
+  carry. `--inbox` keeps method A available there too.
+- **Otter's Public API is Enterprise-gated**, and the `web` backend is unofficial
+  and unversioned. Treat a sudden failure of either as expected rather than a
+  bug, and fall back to `archive_meetings.py --inbox DIR`. Both base URLs are
+  `.env` settings so an endpoint move needs no code change.
+- **The archive holds meeting recordings of staff** — it inherits whatever Drive
+  permissions its root folder has. Set `DRIVE_ARCHIVE_FOLDER_ID` to a folder
+  shared with the team rather than widening a personal folder.
 - **Acceptance criteria** are read from the Jira **description** (this Jira has no
   dedicated AC field).
 - **Attachments** are matched by **filename only** (no PDF/Excel text extraction).

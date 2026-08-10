@@ -81,6 +81,59 @@ Per developer it reports `in_slack` / `in_meeting`, an assessment (aligned /
 minor gaps / significant gaps / no update), and the specific discrepancies —
 e.g. a blocker raised verbally but not written, or a Slack task never discussed.
 
+### Meeting archive
+
+`archive_meetings.py` builds the team's historical record of meetings in Google
+Drive, organised by project — for knowledge sharing, onboarding, and audit.
+
+```
+<DRIVE_ARCHIVE_FOLDER>/<Project>/<Year>/<YYYY-MM-DD>_<slug>/
+    recording.mp3     the Otter audio
+    transcript.txt    Otter-format text (feeds gap_report / verify_standup)
+    ai-summary.md     Otter's AI summary, outline, insights, action items
+    notes.md          discussion notes — pre-filled stub, the team edits it
+    meta.json         machine-readable record + the "already archived" marker
+```
+
+The project is inferred from the Jira issue keys spoken in the meeting, using
+`ARCHIVE_PROJECT_NAMES` (e.g. `SP:STACX,WS:STACX,HIR:HIROCOM,BHA:BHA`); the
+project with the most mentions wins, ties go to whichever was mentioned first,
+and a meeting naming no known prefix lands in `ARCHIVE_DEFAULT_PROJECT`.
+`--project` overrides the detection. Every project a meeting touched is recorded
+in its `also_mentions`.
+
+Each run upserts a row per meeting into the **Meeting Archive** tab of the Daily
+Status sheet (date, project, title, duration, attendees, issues, and a link to
+each artifact) and posts the links to that project's Slack channel — reusing the
+`SUMMARY_CHANNEL_ROUTES` mapping rather than a second one.
+
+```bash
+python archive_meetings.py                    # today
+python archive_meetings.py --since-days 7     # last week
+python archive_meetings.py --date 2026-08-05
+python archive_meetings.py --inbox exports/   # hand-exported files, no Otter login
+python archive_meetings.py --dry-run          # print the plan, upload nothing
+python archive_meetings.py --no-audio         # text only
+```
+
+**Getting meetings out of Otter.** Three routes, set by `OTTER_BACKEND`:
+
+| Route | Auth | Availability |
+|-------|------|--------------|
+| `official` | `OTTER_API_KEY` (Bearer) | Otter's **Public API** — Enterprise workspaces only. Ask your account manager to enable it, then Integrations → Developer → Create key. |
+| `web` | `OTTER_EMAIL` / `OTTER_PASSWORD` | The internal API the otter.ai web app calls. Any plan, but **unofficial** — Otter can change or block it without notice. |
+| `--inbox DIR` | none | Files you exported from Otter by hand. Always works; the fallback when either API is unavailable. |
+
+`OTTER_API_BASE` / `OTTER_WEB_BASE` are configuration, so an endpoint move is a
+`.env` edit rather than a code change.
+
+Re-runs are idempotent: a meeting folder that already contains `meta.json` is
+skipped unless you pass `--force`, and `notes.md` is never overwritten once it
+exists — the team's edits are safe.
+
+Uploads use the OAuth Drive credentials (`drive_oauth.py auth`), not the service
+account, which has no Drive storage of its own.
+
 ### Stand-up verification (Jira vs meeting)
 
 `verify_standup.py` is the Scrum-Master audit: instead of Slack, it compares each
