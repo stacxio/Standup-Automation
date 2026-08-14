@@ -134,6 +134,80 @@ exists — the team's edits are safe.
 Uploads use the OAuth Drive credentials (`drive_oauth.py auth`), not the service
 account, which has no Drive storage of its own.
 
+### Daily performance scoring
+
+Each developer gets one score per working day, out of 100, computed from Slack
+and Jira with no manual entry, review or override:
+
+| | Check | Weight |
+|---|---|---|
+| **Process** | check-in posted · task id mentioned · Jira description · commit linked · their comment on the task | **40** |
+| **Delivery** | task Done, or In Review with a commit id in a comment | **60** |
+
+Absent is a real `0`. Approved leave, weekends and holidays are `Not Scored` —
+excluded from averages rather than counted as zero, as is any day where Jira or
+Slack data was incomplete. Per-task checks are averaged across the tasks picked,
+so two of three documented scores 6.7 of 10.
+
+The rules live in `scorecard.py` as a pure function: same facts in, same score
+out, with the reasoning engine deliberately kept out of it. Every row carries
+the evidence that produced it — per task, per check, including why a check
+failed — which is what stands in for human review.
+
+```bash
+python build_scorecard.py --capture              # ~11:00 — freeze today's committed tasks
+python build_scorecard.py --score --notify       # ~18:00 — score, write tabs, post
+python build_scorecard.py --score --dry-run      # print the table, write nothing
+python build_scorecard.py --score --date 2026-08-11
+python build_scorecard.py --recompute --days 3   # ~02:00 — self-correcting pass
+```
+
+`--capture` freezes the day's commitment before the workday closes, so tasks
+cannot be quietly dropped; `--recompute` re-runs the identical function over the
+trailing window, which is what replaces an appeals process — a late Jira update
+is picked up overnight without anyone asking.
+
+**Every developer's score is posted to #stacx-check-in daily**, as one
+fixed-width table with the rubric in the footer:
+
+```
+Developer  Total  Process  Delivery  State
+Soma       100.0     40.0      60.0  Excellent
+Raghul      71.7     31.7      40.0  On Track
+Priya       70.0     40.0      30.0  On Track (half day)
+Arjun        0.0      0.0       0.0  Absent
+Meera          —        —         —  Not scored — jira: 503
+```
+
+`SCORE_PUBLIC_ORDER=roster` (default) keeps roll-call order; `=score` sorts
+highest-first. `SCORE_PUBLIC_SCORES=false` reverts to an aggregate-only post, and
+`SCORE_DM_ENABLED=true` adds a per-person DM carrying the task-level evidence.
+
+`--score` runs inside `run_daily.py`. `--capture` (~11:00) and `--recompute`
+(~02:00) need their own scheduled tasks, since the daily run is after hours.
+
+- [docs/SCORING.md](docs/SCORING.md) — the rubric, thresholds, rollout and limitations
+- [docs/SCORECARD_API.md](docs/SCORECARD_API.md) — the module contract
+
+#### Dashboard
+
+`build_dashboard.py` renders the `Scorecard Daily` fact table into a single
+self-contained HTML file — no CDN, no fonts, no images — so it opens from disk,
+mails, and publishes as-is.
+
+```bash
+python build_dashboard.py                    # -> Result/scorecard_dashboard.html
+python build_dashboard.py --demo             # sample data; no Sheets needed
+python build_dashboard.py --post             # + upload the file to Slack
+```
+
+Five panels, period-filtered to 7 / 14 / 30 days: the team average as a hero
+figure with a KPI row; **process vs delivery as a stacked bar per developer** —
+which shows *which half* of the rubric someone is failing, where a single total
+cannot; the team trend over time; a developer × day heatmap; and the full table,
+which is both the accessible twin of every chart and the place `Not Scored` days
+are named rather than silently blank.
+
 ### Stand-up verification (Jira vs meeting)
 
 `verify_standup.py` is the Scrum-Master audit: instead of Slack, it compares each

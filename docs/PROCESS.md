@@ -17,7 +17,7 @@ by the summarize / gap / verify agents.
 | **Otter.ai export** | Google Meet stand-up transcript, supplied as a `.txt` export/paste (method A — no login/scrape). Used by the two audit agents. |
 | **Otter.ai API** | Recordings, transcripts and AI summaries pulled by the archive agent — Public API (Bearer key, Enterprise) or the unofficial web API, with a hand-export inbox as fallback. |
 | **Google Sheets — Attendance** (`1W3H2u…4sOI`) | Master, Summary, month tabs, Leaves. |
-| **Google Sheets — Daily Status** (`1j87qp…4ZzM`) | Month tabs, Gap Report, Standup Verification, Meeting Archive. |
+| **Google Sheets — Daily Status** (`1j87qp…4ZzM`) | Month tabs, Gap Report, Standup Verification, Meeting Archive, Scorecard Commitments / Daily / Scores*Month*. |
 | **Google Drive** | Payslip PDFs (optional upload); the **meeting archive** (recordings, transcripts, summaries, notes) under `DRIVE_ARCHIVE_FOLDER`. |
 
 All credentials and channel IDs live in the **gitignored `.env`** (`.env.example`
@@ -86,6 +86,54 @@ documents every variable).
   #stacx-check-in.
 - **Scope knobs:** `--since-days` (default 3), `--max-issues` (default 8).
 
+#### `build_scorecard.py` — Daily performance scoring agent
+- **Role:** scores each developer 0-100 per working day from Slack and Jira,
+  with no manual entry, review or override. Full rubric in
+  [SCORING.md](SCORING.md); module contract in [SCORECARD_API.md](SCORECARD_API.md).
+- **Reads:** the check-in channel (roll-call + stand-up text, via
+  `build_attendance` / `build_report`) and **Jira** per picked issue
+  (description, status, comments, dev-panel commit link).
+- **Modes:**
+  - `--capture` (~11:00) freezes the day's committed Jira keys to the
+    `Scorecard Commitments` tab, *before* the workday closes, so a commitment
+    cannot be quietly dropped later.
+  - `--score` (~18:00) scores against that frozen set using Jira state at the
+    cutoff; writes `Scorecard Daily` (append-only) + `Scores<Month><Year>`.
+  - `--recompute --days N` (~02:00) re-runs the identical function over the
+    trailing window. This is the self-correcting pass that replaces an appeals
+    process — a late Jira update is picked up overnight, unasked.
+- **Slack:** posts **every developer's score** to #stacx-check-in each day as one
+  fixed-width table (total / process / delivery / state), with the rubric in the
+  footer so a number is never separated from what produced it.
+  `SCORE_PUBLIC_ORDER` picks roll-call order (default) or highest-first.
+  `SCORE_PUBLIC_SCORES=false` reverts to an aggregate-only post; `SCORE_DM_ENABLED`
+  adds a per-person DM with the task-level evidence. Data failures go to
+  `SCORE_OPS_CHANNEL_ID`.
+- **Determinism:** the reasoning engine is **not involved**. All arithmetic is
+  in the pure `scorecard.py`; this agent only fetches and writes. Re-running on
+  the same facts produces the identical record, which is what makes the
+  recompute pass safe.
+- **`Not Scored` is not zero:** a Jira outage, a missing roll-call, or partial
+  issue data yields `Not Scored` (excluded from averages, retried), never a low
+  score. Only a genuine absence yields `0`.
+- **Note:** `--score` runs inside `run_daily.py`. `--capture` (~11:00) and
+  `--recompute` (~02:00) need their own scheduled tasks — the daily run happens
+  after the workday, so it cannot freeze a commitment before the day closes.
+
+#### `build_dashboard.py` — Scorecard dashboard agent
+- **Reads:** the `Scorecard Daily` tab (nothing else — it is a view over the
+  fact table, never a second source of truth).
+- **Writes:** `Result/scorecard_dashboard.html`, a single self-contained file
+  with no external references. `--post` uploads it to #stacx-check-in.
+- **Panels:** hero + KPI row, process-vs-delivery stacked bars per developer,
+  team trend, developer × day heatmap, and the full table. Period filter of
+  7 / 14 / 30 days scopes all of them at once.
+- **`--demo`** renders sample data with placeholder names, for reviewing the
+  layout before any real run — a page of invented performance figures should
+  never be mistakable for a real record of a real person.
+- **Rendering** lives in the pure `dashboard.py`; this agent only fetches and
+  writes. `Not Scored` days render as empty cells, never as zero.
+
 ### 2.3 Knowledge-retention agents
 
 #### `archive_meetings.py` — Meeting archive agent
@@ -151,6 +199,8 @@ These modules are the reusable machinery the agents call (not run directly):
 | `otter.py` | Pull meetings from Otter — Public API / unofficial web API / inbox — normalised onto one `Meeting` shape. Renders transcripts back into Otter export format so `transcript.py` handles them unchanged. |
 | `archive.py` | Pure filing rules for the archive: project detection, folder paths, the generated documents, index upsert, Slack notice. No I/O. |
 | `gap.py` | Slack-vs-transcript comparison logic. |
+| `scorecard.py` | The daily performance rubric — pure scoring, sheet rows and Slack text. No I/O, and the reasoning engine is never involved. See [SCORING.md](SCORING.md) and [SCORECARD_API.md](SCORECARD_API.md). |
+| `dashboard.py` | Renders the scorecard fact table into one self-contained HTML page. Pure — parsing and markup only, no Sheets or network. |
 | `verify.py` | Jira-vs-transcript Scrum-Master verification logic. |
 | `sheets.py`, `models.py`, `run.py`, `cli.py` | Sheets upsert, data shapes, and a standalone fetch/summarize entry point. |
 
@@ -167,6 +217,9 @@ run_daily.py ──► build_attendance.py ──► Attendance sheet + Slack no
                      │  (reasoning engine + Jira)
              ──► daily_summary.py    ──► #feedback-stacx / #feedback-hirocom /
                      │  (Jira detail)      #feedback-bha  (routed by prefix)
+             ──► build_scorecard.py --score --notify
+                     │  (Jira state at cutoff)  every developer's score -> #stacx-check-in
+             ──► build_dashboard.py  ──► Result/scorecard_dashboard.html
 
 On demand, after the Google Meet stand-up (you export the Otter transcript):
       │
@@ -183,6 +236,11 @@ archive_meetings.py [--since-days N | --date D] [--inbox DIR]
       │  (Otter API or hand exports -> Drive, by project)
       ▼  Drive <Project>/<Year>/<date>_<slug>/ + Meeting Archive tab
       ▼  links posted to the project's channel
+
+Scoring jobs that need their own scheduled task (run_daily.py is after hours):
+
+  11:00  build_scorecard.py --capture              freeze the day's commitments
+  02:00  build_scorecard.py --recompute --days 3   self-correcting pass
 ```
 
 ---

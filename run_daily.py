@@ -1,8 +1,17 @@
-"""Daily job: refresh attendance, the Daily Status report, and post a summary.
+"""Daily job: refresh attendance, the Daily Status report, summary and scores.
 
-Runs build_attendance.py, build_report.py, then daily_summary.py as subprocesses
-and appends their combined output to logs/daily.log. This is what the Windows
-scheduled task invokes.
+Runs each agent as a subprocess and appends the combined output to
+logs/daily.log. This is what the Windows scheduled task invokes.
+
+The scorecard step posts every developer's score for the day to the check-in
+channel (SCORE_PUBLIC_SCORES=true) and refreshes the dashboard. Two scorecard
+jobs are *not* here and need their own scheduled tasks, because this run happens
+after the workday:
+  * `build_scorecard.py --capture`  at ~11:00 — freezes the day's commitments
+    before the workday closes. Without it the 18:00 run captures late, which
+    still works but cannot catch a task quietly dropped during the day.
+  * `build_scorecard.py --recompute --days 3` at ~02:00 — the self-correcting
+    pass that picks up late Jira updates.
 
 Setup reminder (config lives in .env, which is gitignored — not in the repo):
   * The summary step routes each project's slice to its own Slack channel via
@@ -33,6 +42,10 @@ STEPS = [
     ("report", ["build_report.py", "--notify"]),
     # The summary posts on every run — no --notify needed (it is still accepted).
     ("summary", ["daily_summary.py"]),
+    # Scoring runs last: it reads the Jira state the report step has just
+    # refreshed, and posts every developer's score to the check-in channel.
+    ("scorecard", ["build_scorecard.py", "--score", "--notify"]),
+    ("dashboard", ["build_dashboard.py"]),
 ]
 
 
