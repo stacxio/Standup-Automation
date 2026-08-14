@@ -267,8 +267,12 @@ def push_to_sheets(values: list[list[str]]) -> str | None:
         written.append((title, len(mvalues) - 1))
 
     # Remove the legacy single tab (e.g. "Sheet1"); keep every month-named tab.
+    # Only the default gspread/Sheets names are removed: this spreadsheet is
+    # shared with the other agents, whose tabs (Gap Report, Standup
+    # Verification, Meeting Archive, Scorecard *) are not month-named and must
+    # survive a report run. Deleting anything non-month-named would wipe them.
     for ws in sh.worksheets():
-        if not _is_month_tab(ws.title):
+        if not _is_month_tab(ws.title) and _LEGACY_TAB.match(ws.title):
             sh.del_worksheet(ws)
 
     for title, n in written:
@@ -286,6 +290,10 @@ def group_by_month(rows: list[list[str]]) -> dict[tuple[int, int], list]:
             continue  # skip rows without a parseable date
         by_month[(d.year, d.month)].append(row)
     return by_month
+
+
+# Default sheet names created by Google Sheets / gspread — safe to delete.
+_LEGACY_TAB = re.compile(r"^(Sheet\d*|Sheet1|Copy of Sheet\d*)$", re.I)
 
 
 def _is_month_tab(name: str) -> bool:
