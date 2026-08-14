@@ -56,6 +56,26 @@ def adf_to_text(node) -> str:
     return ""
 
 
+def adf_media_names(node) -> list[str]:
+    """Filenames of images/files embedded in an ADF value, in document order.
+
+    `adf_to_text` flattens a screenshot-only comment to "" — correctly, since it
+    holds no text — which makes an attached screenshot invisible to anything
+    counting characters. Scoring treats a screenshot as a real ticket update, so
+    it needs to see that the media node is there.
+    """
+    found: list[str] = []
+    if isinstance(node, list):
+        for item in node:
+            found += adf_media_names(item)
+    elif isinstance(node, dict):
+        if node.get("type") == "media":
+            attrs = node.get("attrs") or {}
+            found.append(str(attrs.get("alt") or attrs.get("id") or "attachment"))
+        found += adf_media_names(node.get("content"))
+    return found
+
+
 def issue_status(cfg: JiraConfig, key: str) -> tuple[str, str] | None:
     """Return (status_name, status_category_key) for the issue, or None on error.
 
@@ -77,7 +97,7 @@ def issue_detail(cfg: JiraConfig, key: str) -> dict | None:
     `description` is the flattened description text ("" when the field is
     empty). Returns None if the issue can't be read (not found / no access).
     """
-    fields_param = "summary,description,status,assignee,priority,attachment"
+    fields_param = "summary,description,status,assignee,priority,attachment,issuetype,parent"
     data = _get(cfg, f"{cfg.base_url}/rest/api/3/issue/{key}?fields={fields_param}")
     if data is None:
         return None
@@ -93,6 +113,11 @@ def issue_detail(cfg: JiraConfig, key: str) -> dict | None:
         "description": adf_to_text(fields.get("description")).strip(),
         "status_name": status.get("name", "") or "",
         "status_category": (status.get("statusCategory", {}) or {}).get("key", "") or "",
+        "issue_type": ((fields.get("issuetype") or {}).get("name") or "").strip(),
+        # Sub-tasks routinely carry no description of their own — the context
+        # lives on the parent. Callers that judge "is this documented" need to
+        # be able to look there.
+        "parent_key": ((fields.get("parent") or {}).get("key") or "").strip(),
         "assignee": assignee.get("displayName", "") or "",
         "assignee_id": assignee.get("accountId", "") or "",
         "priority": priority.get("name", "") or "",
@@ -119,6 +144,9 @@ def issue_comments(cfg: JiraConfig, key: str) -> list[dict] | None:
             # first 10 chars are the calendar date.
             "created": str(c.get("created", "") or ""),
             "body": adf_to_text(c.get("body")).strip(),
+            # A screenshot-only comment flattens to an empty body; this is how a
+            # caller can tell "said nothing" from "posted evidence".
+            "media": adf_media_names(c.get("body")),
         }
         for c in data.get("comments", []) or []
     ]
