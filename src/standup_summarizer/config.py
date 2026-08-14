@@ -176,6 +176,118 @@ class ArchiveConfig:
         return self.project_names.get((prefix or "").upper())
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(_env(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(float(_env(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_set(name: str, default: frozenset[str]) -> frozenset[str]:
+    """Parse 'In Review,Code Review' into a set; blank falls back to `default`."""
+    parts = {p.strip() for p in (_env(name) or "").split(",") if p.strip()}
+    return frozenset(parts) if parts else default
+
+
+@dataclass(frozen=True)
+class ScoreConfig:
+    """Daily performance scoring — see docs/SCORING.md §10.
+
+    Every weight and threshold is configuration rather than a constant, because
+    they are tuned once against a backfill before the system goes live. The six
+    weights must sum to 100; `scorecard.Weights.validate()` enforces that on
+    every run so a mistyped `.env` fails loudly instead of quietly scoring
+    everyone out of 95.
+    """
+
+    weights: "scorecard.Weights"
+    thresholds: "scorecard.Thresholds"
+    capture_hour: int = 11
+    cutoff_hour: int = 18
+    recompute_days: int = 3
+    ops_channel_id: str | None = None
+    dm_enabled: bool = False
+    public_scores: bool = True
+    """Post every developer's score to the check-in channel each day. When
+    false, only the team aggregate is posted and individual scores go by DM."""
+    public_order: str = "roster"
+    """'roster' (roll-call order) or 'score' (highest first)."""
+    project_prefixes: frozenset[str] = frozenset()
+    """Issue-key prefixes that name a real Jira project. Empty means "derive
+    them from SUMMARY_CHANNEL_ROUTES and ARCHIVE_PROJECT_NAMES", which is what
+    every other agent already routes on."""
+
+    @classmethod
+    def from_env(cls) -> "ScoreConfig":
+        from . import scorecard  # local import: config must not depend on rules
+
+        weights = scorecard.Weights(
+            checkin=_env_float("SCORE_WEIGHT_CHECKIN", 10.0),
+            picked=_env_float("SCORE_WEIGHT_PICKED", 5.0),
+            description=_env_float("SCORE_WEIGHT_DESCRIPTION", 10.0),
+            commit=_env_float("SCORE_WEIGHT_COMMIT", 5.0),
+            comment=_env_float("SCORE_WEIGHT_COMMENT", 10.0),
+            done=_env_float("SCORE_WEIGHT_DONE", 60.0),
+        )
+        weights.validate()
+        thresholds = scorecard.Thresholds(
+            min_description_chars=_env_int("SCORE_MIN_DESCRIPTION_CHARS", 30),
+            min_comment_chars=_env_int("SCORE_MIN_COMMENT_CHARS", 20),
+            review_statuses=_env_set("SCORE_REVIEW_STATUSES",
+                                     frozenset({"In Review", "Code Review", "Review"})),
+            incident_types=_env_set("SCORE_INCIDENT_TYPES",
+                                    frozenset({"Incident", "Support"})),
+            incident_projects=_env_set("SCORE_INCIDENT_PROJECTS", frozenset()),
+            min_median_tasks=_env_float("SCORE_MIN_MEDIAN_TASKS", 2.0),
+            parent_description_fallback=_env_bool("SCORE_PARENT_DESCRIPTION", True),
+            media_counts_as_comment=_env_bool("SCORE_MEDIA_IS_COMMENT", True),
+            commit_in_comment_counts=_env_bool("SCORE_COMMIT_IN_COMMENT", True),
+            credit_done=_env_float("SCORE_CREDIT_DONE", 1.0),
+            credit_review_with_commit=_env_float("SCORE_CREDIT_REVIEW_COMMIT", 1.0),
+            credit_review=_env_float("SCORE_CREDIT_REVIEW", 0.5),
+            credit_in_progress=_env_float("SCORE_CREDIT_IN_PROGRESS", 0.25),
+            credit_todo=_env_float("SCORE_CREDIT_TODO", 0.0),
+        )
+        return cls(
+            weights=weights,
+            thresholds=thresholds,
+            capture_hour=_env_int("SCORE_CAPTURE_HOUR", 11),
+            cutoff_hour=_env_int("SCORE_CUTOFF_HOUR", 18),
+            recompute_days=_env_int("SCORE_RECOMPUTE_DAYS", 3),
+            ops_channel_id=(_env("SCORE_OPS_CHANNEL_ID") or None),
+            dm_enabled=_env_bool("SCORE_DM_ENABLED", False),
+            public_scores=_env_bool("SCORE_PUBLIC_SCORES", True),
+            public_order=(_env("SCORE_PUBLIC_ORDER", "roster") or "roster").strip().lower(),
+            project_prefixes=frozenset(
+                p.strip().upper() for p in (_env("SCORE_PROJECT_PREFIXES") or "").split(",")
+                if p.strip()
+            ),
+        )
+
+    def known_prefixes(self, *fallbacks: dict) -> frozenset[str]:
+        """Configured prefixes, else those the other agents already route on.
+
+        Stand-up text is hand-typed prose, and the key parser matches anything
+        shaped like `ABC-123` — "ST-11", "PI-01" and "ORG-404" all came out of
+        real stand-ups and are not Jira issues. An unresolvable key sends the
+        whole developer-day to `Not Scored`, so an unfiltered parse quietly
+        costs people scored days.
+        """
+        if self.project_prefixes:
+            return self.project_prefixes
+        found: set[str] = set()
+        for mapping in fallbacks:
+            found |= {str(k).upper() for k in (mapping or {})}
+        return frozenset(found)
+
+
 @dataclass(frozen=True)
 class ReasoningConfig:
     """Settings for the summarize stage's reasoning engine (SRS Section 8 / 9).
