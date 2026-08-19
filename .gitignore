@@ -15,11 +15,14 @@ venv/
 build/
 dist/
 
-# Generated outputs (contain team attendance/salary data — never commit)
+# Generated outputs (contain team attendance/salary/performance data — never commit)
 Attendance/
 Salary_Slips/
-Result/*.csv
-Result/*.xlsx
+# Everything in Result/ is generated. Listing extensions let the scorecard
+# dashboard (.html, and it names individual developers' scores) slip through;
+# ignore the directory and keep it on clone the way logs/ and credentials/ do.
+Result/*
+!Result/.gitkeep
 
 # Intermediate image assets (the committed logo is assets/stacx_banner.jpg)
 assets/*.png
