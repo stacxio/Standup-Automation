@@ -62,9 +62,22 @@ HALF_DAY = "half day"
 
 BANDS = ((85.0, "Excellent"), (70.0, "On Track"), (50.0, "Needs Attention"), (0.0, "At Risk"))
 
-# A commit reference in free text: either a commit URL path, or a bare sha.
+# A commit reference in free text, in three forms.
+#   1. a commit URL path, whatever it is labelled:  .../commit/9f8e7d6
 _COMMIT_URL = re.compile(r"/commits?/[0-9a-fA-F]{7,40}")
+#   2. a bare sha:  "merged 2934bb5"
 _SHA = re.compile(r"(?<![\w-])[0-9a-fA-F]{7,40}(?![\w-])")
+#   3. a commit *label* followed by a url, which is how the team actually writes
+#      it: "Latest commit: <url>", "commit id - <url>", "commits <url>". The
+#      url need not contain /commit/ — a compare link, a tree link or a
+#      shortened link all count once the developer has named it as the commit.
+#      Only whitespace and an optional separator may sit between the label and
+#      the url, so "we commit to ship this: https://plan" is not a commit.
+_LABELLED_COMMIT_URL = re.compile(
+    r"(?:latest\s+)?commits?(?:\s*ids?)?\s*[:\-–]?\s*(https?://\S+)", re.I
+)
+# Punctuation a url picks up when it ends a sentence or sits in brackets.
+_URL_TRAILING = ".,;:!?)]}>\"'"
 
 
 def _norm(text: str) -> str:
@@ -209,8 +222,8 @@ class Thresholds:
 # --------------------------------------------------------------------------
 # Individual rules — each independently testable
 # --------------------------------------------------------------------------
-def has_commit_reference(text: str) -> bool:
-    """Whether free text names a git commit (SCORING.md §4.6).
+def commit_ids_in_text(text: str) -> list[str]:
+    """The commit ids named in free text, in order, deduplicated.
 
     A commit URL path counts outright. A bare token counts only if it is 7-40
     hex characters, standalone, and contains **both** a digit and a letter a-f:
@@ -218,15 +231,41 @@ def has_commit_reference(text: str) -> bool:
     commits, and a false positive here hands out the full 60-point delivery
     score on an In Review ticket. The lookbehind also keeps the numeric half of
     a Jira key (`SP-1234567`) from matching.
+
+    A url the developer has explicitly labelled as the commit counts too, even
+    when its path is not `/commit/<sha>` — a compare link or a shortened link is
+    still them telling us where the commit is.
+
+    Returns the ids rather than a bare yes/no so callers can show what was found
+    instead of only whether anything exists.
     """
     body = str(text or "")
-    if _COMMIT_URL.search(body):
-        return True
+    found: dict[str, None] = {}
+
+    # A url whose own path names a commit — the strongest form.
+    commit_urls = set()
+    for url in _COMMIT_URL.findall(body):
+        commit_urls.add(url)
+        found.setdefault(url.rsplit("/", 1)[-1], None)
+
+    # A url the developer labelled as the commit. Skip ones already counted
+    # above, or a single commit would be reported twice.
+    for url in _LABELLED_COMMIT_URL.findall(body):
+        url = url.rstrip(_URL_TRAILING)
+        if any(seen in url for seen in commit_urls):
+            continue
+        found.setdefault(url, None)
+
     for token in _SHA.findall(body):
         low = token.lower()
         if any(c.isdigit() for c in low) and any(c in "abcdef" for c in low):
-            return True
-    return False
+            found.setdefault(token, None)
+    return list(found)
+
+
+def has_commit_reference(text: str) -> bool:
+    """Whether free text names a git commit (SCORING.md §4.6)."""
+    return bool(commit_ids_in_text(text))
 
 
 def description_check(task: TaskFacts, thresholds: Thresholds) -> dict:

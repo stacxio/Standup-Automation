@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -55,7 +56,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer import jira  # noqa: E402
+from standup_summarizer import jira, scorecard  # noqa: E402
 from standup_summarizer.config import JiraConfig, SlackConfig  # noqa: E402
 from standup_summarizer.fetch import build_client  # noqa: E402
 
@@ -70,6 +71,14 @@ NO_COMMENTS = "no comments"
 UNKNOWN = "unknown"
 NO_TASKS = "no task picked today"
 NO_JIRA_CFG = "Jira not configured."
+FROM_COMMENTS = "(from comments)"
+# The commit line answers "is there a commit for this task, yes or no" — the id
+# itself is in the scorecard's evidence column for anyone who needs to trace it.
+LINKED = "Yes"
+
+# A pull request named in prose: GitHub /pull/N, Bitbucket /pull-requests/N,
+# GitLab /merge_requests/N. Only a real URL counts — "raised the PR" is not one.
+_PR_URL = re.compile(r"https?://\S+?/(?:pull|pull-requests|merge_requests)/\d+", re.I)
 
 # Slack rejects very long messages; the digest is split on developer blocks.
 SLACK_CHUNK_CHARS = 3500
@@ -126,6 +135,27 @@ def _same_person(author: str, short: str) -> bool:
 # --------------------------------------------------------------------------
 # Per-issue rendering
 # --------------------------------------------------------------------------
+def _scm_from_comments(key: str, look: _JiraLookup) -> tuple[list[str], list[str]]:
+    """Commit ids and PR urls named in the issue's comments -> (commits, prs).
+
+    Jira's development panel is populated only by a real GitHub/Bitbucket/GitLab
+    integration; text typed into a comment never reaches it. With no SCM linked
+    to this Jira the panel is empty on every issue, while the team's habit is to
+    paste the branch, commit and PR into a comment — so "not linked" was being
+    reported over work that plainly exists.
+
+    Reads the same commit-id detector the scorecard uses, so the digest and the
+    score cannot disagree about whether an issue has a commit.
+    """
+    commits: list[str] = []
+    prs: list[str] = []
+    for comment in (look.comments(key) or []):
+        body = comment.get("body", "")
+        commits += [c for c in scorecard.commit_ids_in_text(body) if c not in commits]
+        prs += [u for u in _PR_URL.findall(body) if u not in prs]
+    return commits, prs
+
+
 def issue_block(key: str, look: _JiraLookup) -> list[str]:
     """The 'jira:' lines for one issue key."""
     detail = look.detail(key)
@@ -137,22 +167,33 @@ def issue_block(key: str, look: _JiraLookup) -> list[str]:
     commits = dev["commits"]
     prs = dev["pull_requests"]
 
-    commit = NOT_LINKED
-    if commits:
-        commit = commits[0]
-        if len(commits) > 1:
-            commit += f" (+{len(commits) - 1} more)"
-
     pr_urls = [p["url"] or p["name"] or p["id"] for p in prs if (p["url"] or p["name"] or p["id"])]
     merged = "yes" if any(p["status"] == "MERGED" for p in prs) else "no"
+
+    # The panel is authoritative; fall back per field so a partially linked
+    # issue keeps the real data and only the gaps come from prose.
+    commit_note, pr_note = "", ""
+    if not commits or not pr_urls:
+        found_commits, found_prs = _scm_from_comments(key, look)
+        if not commits and found_commits:
+            commits, commit_note = found_commits, f" {FROM_COMMENTS}"
+        if not pr_urls and found_prs:
+            pr_urls, pr_note = found_prs, f" {FROM_COMMENTS}"
+            # Prose cannot tell us whether a PR merged; "no" would be a claim.
+            merged = UNKNOWN
+
+    commit = f"{LINKED}{commit_note}" if commits else NOT_LINKED
 
     return [
         f"{key}: {detail['summary'] or UNKNOWN}",
         f"description: {'yes' if detail['description'] else 'no'}",
+        # Branch is not derived from prose: a branch name in a sentence has no
+        # reliable shape ("Latest branch: main GitHub: ..."), and guessing one
+        # would put a wrong name in front of the team.
         f"branch: {', '.join(branches) if branches else NOT_LINKED}",
         f"commit: {commit}",
-        f"PR: {', '.join(pr_urls) if pr_urls else NOT_LINKED}",
-        f"PR merged: {merged if prs else 'no'}",
+        f"PR: {', '.join(pr_urls) + pr_note if pr_urls else NOT_LINKED}",
+        f"PR merged: {merged if (prs or pr_urls) else 'no'}",
     ]
 
 
