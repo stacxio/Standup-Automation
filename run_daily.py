@@ -29,6 +29,7 @@ Run:  .venv/Scripts/python.exe run_daily.py
 from __future__ import annotations
 
 import datetime as dt
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -49,6 +50,17 @@ STEPS = [
 ]
 
 
+def step_env() -> dict:
+    """Environment for the agents, pinning their output to UTF-8.
+
+    Whether a piped child emits UTF-8 or the Windows ANSI codepage otherwise
+    depends on ambient settings (PYTHONUTF8 / PYTHONIOENCODING / the console
+    codepage), which is not something an unattended weekday job should vary on.
+    Pinning it here means the bytes written to the log are the bytes we decode.
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+
 def main() -> None:
     LOG.parent.mkdir(exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -60,6 +72,13 @@ def main() -> None:
                 r = subprocess.run(
                     [str(PY), *args], cwd=str(ROOT),
                     capture_output=True, text=True, timeout=600,
+                    # The agents print UTF-8 (em-dashes, "·", developer names).
+                    # Without an explicit encoding, text=True decodes using the
+                    # Windows ANSI codepage and mangles them in the log — which
+                    # is the one place you look after an unattended failure.
+                    # errors="replace" keeps a stray byte from raising here and
+                    # losing the whole step's output.
+                    encoding="utf-8", errors="replace", env=step_env(),
                 )
                 log.write(f"--- {label} (exit {r.returncode}) ---\n")
                 log.write((r.stdout or "") + (r.stderr or "") + "\n")
