@@ -260,7 +260,33 @@ def commit_ids_in_text(text: str) -> list[str]:
         low = token.lower()
         if any(c.isdigit() for c in low) and any(c in "abcdef" for c in low):
             found.setdefault(token, None)
-    return list(found)
+
+    return _drop_abbreviated(list(found))
+
+
+def _drop_abbreviated(ids: list[str]) -> list[str]:
+    """Remove a short sha that only abbreviates a longer one already listed.
+
+    Developers routinely write both forms of the same commit in one comment —
+    "b4eda6544adcba92984f2c101ee6fe6db81793b5 ... b4eda65" — which would
+    otherwise be reported as two commits and inflate the count. The longer form
+    is kept, since it is the one that identifies the commit unambiguously.
+    """
+    def is_sha(value: str) -> bool:
+        return bool(_SHA.fullmatch(value))
+
+    keep = []
+    for candidate in ids:
+        abbreviates_another = any(
+            other != candidate
+            and is_sha(candidate) and is_sha(other)
+            and len(other) > len(candidate)
+            and other.lower().startswith(candidate.lower())
+            for other in ids
+        )
+        if not abbreviates_another:
+            keep.append(candidate)
+    return keep
 
 
 def has_commit_reference(text: str) -> bool:

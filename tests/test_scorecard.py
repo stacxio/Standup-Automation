@@ -617,3 +617,40 @@ def test_team_post_aggregates_without_ranking():
     assert "Team average" in text and "Absent: 1" in text
     assert "Not scored: 1" in text
     assert "Soma" not in text and "Raghul" not in text     # no per-person ranking
+
+
+# --- commit ids: exact values, deduplicated -------------------------------
+def test_commit_ids_are_returned_verbatim_in_document_order():
+    assert sc.commit_ids_in_text("Latest commits: agb-admin: 2934bb5 agb: 11f33ea") == \
+        ["2934bb5", "11f33ea"]
+
+
+def test_a_short_sha_abbreviating_a_listed_full_sha_is_not_counted_twice():
+    """Developers write both forms of one commit in the same comment."""
+    full = "b4eda6544adcba92984f2c101ee6fe6db81793b5"
+    ids = sc.commit_ids_in_text(f"merged {full} (short: b4eda65) and c8b568a")
+    assert ids == [full, "c8b568a"]          # the full form wins, the short goes
+
+
+def test_two_genuinely_different_shas_both_survive():
+    assert sc.commit_ids_in_text("2934bb5 and 11f33ea") == ["2934bb5", "11f33ea"]
+
+
+def test_a_short_sha_alone_is_kept():
+    assert sc.commit_ids_in_text("merged b4eda65") == ["b4eda65"]
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("Latest commit: https://github.com/o/r/commit/2934bb5", ["2934bb5"]),
+    ("commit id - https://short.link/abc", ["https://short.link/abc"]),
+    ("Commit ID: https://short.link/abc.", ["https://short.link/abc"]),
+    ("We commit to shipping this: https://docs/plan", []),
+    ("Latest commit: tomorrow", []),
+])
+def test_labelled_commit_urls(body, expected):
+    assert sc.commit_ids_in_text(body) == expected
+
+
+def test_a_labelled_commit_path_url_is_counted_once_not_twice():
+    assert sc.commit_ids_in_text(
+        "Latest commit: https://github.com/o/r/commit/2934bb5") == ["2934bb5"]
