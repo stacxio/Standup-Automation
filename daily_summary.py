@@ -57,6 +57,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from standup_summarizer import jira, scorecard  # noqa: E402
+from standup_summarizer.dates import day_from_argv  # noqa: E402
 from standup_summarizer.config import JiraConfig, SlackConfig  # noqa: E402
 from standup_summarizer.fetch import build_client  # noqa: E402
 
@@ -628,7 +629,14 @@ def main() -> None:
         print("Jira not configured — the jira: and Comments: sections will be empty "
               "(set JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN in .env to enable).")
 
-    today = dt.date.today()
+    # --date backfills a past day; without it, today.
+    try:
+        today = day_from_argv(sys.argv)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    if today != dt.date.today():
+        print(f"Backfill: composing the digest for {today.strftime('%d-%m-%Y')}.")
+
     rows = gather(cfg, jira_cfg, today)
     routed = route_blocks(rows, cfg, today, bool(jira_cfg))
 

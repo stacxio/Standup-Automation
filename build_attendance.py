@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from standup_summarizer.config import SlackConfig  # noqa: E402
+from standup_summarizer.dates import day_from_argv  # noqa: E402
 from standup_summarizer.fetch import (  # noqa: E402
     _SlackFetcher,
     _is_standup_message,
@@ -478,7 +479,13 @@ def main() -> None:
     # Months with data (from roll-calls or leaves), plus the upcoming month so
     # its empty tab is always pre-created.
     months = {(d.year, d.month) for d in list(roll_calls) + list(leaves)}
-    today = dt.date.today()
+    # The month tabs are rebuilt from all roll-call history regardless, so the
+    # run date only decides which day's roll-call the Slack notice refers to
+    # and which month is pre-created ahead of time.
+    try:
+        today = day_from_argv(sys.argv)
+    except ValueError as exc:
+        sys.exit(str(exc))
     upcoming = (today.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
     months.add((upcoming.year, upcoming.month))
     months = sorted(months)
@@ -505,7 +512,7 @@ def main() -> None:
     # Post the daily confirmation to the channel only after the sheet is updated.
     # Opt-in (so test runs don't spam); enable with --notify or NOTIFY_SLACK=1.
     if "--notify" in sys.argv or os.environ.get("NOTIFY_SLACK"):
-        _log(notify_slack(cfg, today in roll_calls))
+        _log(notify_slack(cfg, today in roll_calls, day=today))
 
 
 LOG_FILE = Path(__file__).parent / "logs" / "attendance.log"
@@ -523,12 +530,20 @@ def _log(message: str) -> None:
         pass
 
 
-def notify_slack(cfg: SlackConfig, recorded_today: bool) -> str:
-    """Post the daily attendance-recorded confirmation; return a status message."""
+def notify_slack(cfg: SlackConfig, recorded_today: bool, *,
+                 day: dt.date | None = None) -> str:
+    """Post the attendance-recorded confirmation; return a status message.
+
+    A backfilled run names the day, so a notice arriving today cannot be read as
+    confirming today's attendance.
+    """
+    backfill = day is not None and day != dt.date.today()
+    label = day.strftime("%d-%m-%Y") if backfill else "today"
     if not recorded_today:
-        return "No roll-call for today — skipping Slack notification."
+        return f"No roll-call for {label} — skipping Slack notification."
     client = build_client(cfg.bot_token)
-    message = "Your attendance for today has been recorded successfully."
+    message = (f"Attendance for {label} has been recorded successfully." if backfill
+               else "Your attendance for today has been recorded successfully.")
     try:
         resp = client.chat_postMessage(channel=cfg.channel_id, text=message)
         return f"Posted Slack notification (ts={resp.get('ts')})."
