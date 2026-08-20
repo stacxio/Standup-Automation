@@ -499,8 +499,9 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     if dry_run:
         # Show the exact message that would be posted. A dry run that hides the
         # output it is dry-running is not much of a check.
-        print("\n--- Slack post that would go to "
-              f"{cfg.channel_id} ({'per-developer' if score_cfg.public_scores else 'aggregate'}) ---")
+        targets = ", ".join(score_cfg.score_channels(cfg.channel_id))
+        print(f"\n--- Slack post that would go to {targets} "
+              f"({'per-developer' if score_cfg.public_scores else 'aggregate'}) ---")
         print(sc.compose_slack_roster(records, order=score_cfg.public_order)
               if score_cfg.public_scores else sc.compose_slack_team(records))
         print("\n--- Rows that would be written to "
