@@ -58,6 +58,11 @@ class SlackConfig:
     channel_id: str
     include_threads: bool = True
     channel_routes: dict[str, str] = field(default_factory=dict)
+    developer_routes: dict[str, str] = field(default_factory=dict)
+    """Developer short name -> the channel their whole update posts to. Takes
+    precedence over `channel_routes`: some people work to one team's channel
+    whatever the issue-key prefix says, and a task-less developer must not fall
+    back into the check-in channel."""
 
     @classmethod
     def from_env(cls) -> "SlackConfig":
@@ -66,11 +71,16 @@ class SlackConfig:
             channel_id=_env("SLACK_CHANNEL_ID", required=True),  # type: ignore[arg-type]
             include_threads=_env_bool("SLACK_INCLUDE_THREADS", True),
             channel_routes=_parse_routes(_env("SUMMARY_CHANNEL_ROUTES")),
+            developer_routes=_parse_routes(_env("SUMMARY_DEVELOPER_ROUTES")),
         )
 
     def channel_for_prefix(self, prefix: str) -> str:
         """Channel for an issue-key prefix, or the default channel if unrouted."""
         return self.channel_routes.get((prefix or "").upper(), self.channel_id)
+
+    def channel_for_developer(self, name: str) -> str | None:
+        """Channel this developer's whole update posts to, or None if unrouted."""
+        return self.developer_routes.get((name or "").strip().upper())
 
 
 @dataclass(frozen=True)

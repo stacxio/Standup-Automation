@@ -553,10 +553,14 @@ def route_blocks(rows: list[dict], cfg: SlackConfig, today: dt.date,
                  jira_configured: bool) -> dict[str, list[str]]:
     """Group developer blocks by target channel.
 
-    Each developer's tasks are split by issue-key prefix; the slice for each
-    project posts to that project's channel (SUMMARY_CHANNEL_ROUTES), with
-    unrouted prefixes and task-less developers falling back to the default
-    channel (SLACK_CHANNEL_ID). Returns {channel: [header, block, ...]}.
+    A developer named in SUMMARY_DEVELOPER_ROUTES posts their whole update to
+    that one channel, whatever their issue keys say and whether or not they
+    picked anything — they belong to a team, not to a prefix.
+
+    Everyone else is split by issue-key prefix; the slice for each project posts
+    to that project's channel (SUMMARY_CHANNEL_ROUTES), with unrouted prefixes
+    and task-less developers falling back to the default channel
+    (SLACK_CHANNEL_ID). Returns {channel: [header, block, ...]}.
     """
     header = f"*Daily Stand-up Summary — {today.strftime('%d-%m-%Y')}*"
     per_channel: dict[str, list[str]] = {}
@@ -565,6 +569,13 @@ def route_blocks(rows: list[dict], cfg: SlackConfig, today: dt.date,
         per_channel.setdefault(channel, []).append(block)
 
     for row in rows:
+        owned = cfg.channel_for_developer(row["name"])
+        if owned:
+            # Unsplit: their whole update, including any cross-project tasks.
+            for part in split_row(row, jira_configured):
+                add(owned, developer_block(part, jira_configured))
+            continue
+
         ids = row["picked"] + row["previous"] + row["done"]
         if not ids:  # nothing routable — keep the check-in signal in the default
             add(cfg.channel_id, developer_block(row, jira_configured))

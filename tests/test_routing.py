@@ -573,3 +573,69 @@ def test_splitting_survives_a_row_with_no_jira_data():
     row = {"name": "Soma", "checkin": ds.CHECKIN_DONE, "previous": [], "picked": [],
            "done": [], "task_status": [], "jira": [], "comments": []}
     assert ds.split_row(row, False) == [row]
+
+
+# --- per-developer routing ------------------------------------------------
+def _cfg_dev() -> SlackConfig:
+    return SlackConfig(
+        bot_token="x", channel_id=DEFAULT,
+        channel_routes={"SP": "Cstacx", "WS": "Cstacx", "HIR": "Chiro", "BHA": "Cbha"},
+        developer_routes=_parse_routes("Sahil:Cstacx,Mallesh:Cstacx,Gokul:Chiro"),
+    )
+
+
+def test_a_routed_developer_posts_to_their_own_channel():
+    row = _row("Gokul", ds.CHECKIN_DONE, [], ["HIR-1"], [])
+    routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
+    assert set(routed) == {"Chiro"}
+
+
+def test_a_routed_developer_never_falls_back_to_check_in():
+    """The point of the change: no tasks must not mean the check-in channel."""
+    row = _row("Mallesh", ds.CHECKIN_NONE, [], [], [])
+    routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
+    assert set(routed) == {"Cstacx"}
+    assert DEFAULT not in routed
+
+
+def test_a_routed_developers_whole_update_stays_together():
+    """Cross-project tasks are not split away to their prefix's channel."""
+    row = _row("Gokul", ds.CHECKIN_DONE, [], ["HIR-1", "BHA-2", "SP-3"], [])
+    routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
+    assert set(routed) == {"Chiro"}
+    text = "\n".join(routed["Chiro"])
+    for key in ("HIR-1", "BHA-2", "SP-3"):
+        assert key in text
+
+
+def test_an_unrouted_developer_still_splits_by_prefix():
+    row = _row("Raghul", ds.CHECKIN_DONE, [], ["HIR-1", "SP-3"], [])
+    routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
+    assert set(routed) == {"Chiro", "Cstacx"}
+
+
+def test_an_unrouted_taskless_developer_still_falls_back():
+    routed = ds.route_blocks([_row("GN", ds.CHECKIN_DONE, [], [], [])],
+                             _cfg_dev(), TODAY, True)
+    assert set(routed) == {DEFAULT}
+
+
+def test_developer_routing_is_case_insensitive():
+    cfg = _cfg_dev()
+    assert cfg.channel_for_developer("sahil") == "Cstacx"
+    assert cfg.channel_for_developer("SAHIL") == "Cstacx"
+    assert cfg.channel_for_developer("Raghul") is None
+    assert cfg.channel_for_developer("") is None
+
+
+def test_no_developer_routes_configured_changes_nothing():
+    row = _row("Sahil", ds.CHECKIN_DONE, [], ["WS-1"], [])
+    routed = ds.route_blocks([row], _cfg(), TODAY, True)   # prefix routing only
+    assert set(routed) == {"Cstacx"}
+
+
+def test_a_routed_developer_with_many_tasks_is_still_split_into_messages():
+    row = _bulk_row("Sahil", 40, prefix="WS")
+    routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
+    assert set(routed) == {"Cstacx"}
+    assert max(len(m) for m in ds.chunk(routed["Cstacx"])) <= ds.SLACK_CHUNK_CHARS
