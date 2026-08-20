@@ -211,3 +211,50 @@ def test_a_backfill_is_marked_in_the_log(monkeypatch, tmp_path):
     text = run(monkeypatch, tmp_path, [("s", [str(seen)], False)], ["run_daily.py", _recent(2)])
     import datetime as _dt
     assert f"(backfill for {(_dt.date.today() - _dt.timedelta(days=2)).isoformat()})" in text
+
+
+# --- skipping steps -------------------------------------------------------
+def test_nothing_is_skipped_by_default():
+    kept, skipped = rd.steps_to_run(["run_daily.py"], rd.STEPS)
+    assert kept == rd.STEPS and skipped == []
+
+
+def test_no_summary_drops_only_the_summary():
+    kept, skipped = rd.steps_to_run(["run_daily.py", "--no-summary"], rd.STEPS)
+    assert skipped == ["summary"]
+    assert [l for l, *_ in kept] == ["attendance", "report", "scorecard", "dashboard"]
+
+
+@pytest.mark.parametrize("label", ["attendance", "report", "summary", "scorecard", "dashboard"])
+def test_every_step_can_be_skipped_by_name(label):
+    kept, skipped = rd.steps_to_run(["run_daily.py", f"--no-{label}"], rd.STEPS)
+    assert skipped == [label] and label not in [l for l, *_ in kept]
+
+
+def test_several_steps_can_be_skipped_at_once():
+    kept, skipped = rd.steps_to_run(
+        ["run_daily.py", "--no-summary", "--no-dashboard"], rd.STEPS)
+    assert set(skipped) == {"summary", "dashboard"}
+    assert [l for l, *_ in kept] == ["attendance", "report", "scorecard"]
+
+
+def test_an_unknown_no_flag_skips_nothing():
+    """A typo must not silently drop a step, nor stop the run."""
+    kept, skipped = rd.steps_to_run(["run_daily.py", "--no-nonsense"], rd.STEPS)
+    assert kept == rd.STEPS and skipped == []
+
+
+def test_a_skip_flag_is_not_mistaken_for_the_date():
+    import datetime as _dt
+    assert rd.resolve_day(["run_daily.py", "--no-summary"]) == _dt.date.today()
+    assert rd.resolve_day(["run_daily.py", _recent(1), "--no-summary"]) == \
+        _dt.date.today() - _dt.timedelta(days=1)
+
+
+def test_a_skipped_step_does_not_run_and_is_recorded(monkeypatch, tmp_path):
+    ran = child(tmp_path, "print('RAN')\n")
+    steps = [("summary", [str(ran)], True), ("scorecard", [str(ran)], True)]
+    text = run(monkeypatch, tmp_path, steps, ["run_daily.py", "--no-summary"])
+    assert text.count("RAN") == 1                  # only the scorecard ran
+    assert "Skipping: summary." in text            # and the log says why
+    assert "--- summary" not in text

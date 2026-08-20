@@ -26,6 +26,12 @@ Setup reminder (config lives in .env, which is gitignored — not in the repo):
 Run:  .venv/Scripts/python.exe run_daily.py                  # today
       .venv/Scripts/python.exe run_daily.py 19-08-2026      # backfill that day
       .venv/Scripts/python.exe run_daily.py --date 2026-08-19
+      .venv/Scripts/python.exe run_daily.py 19-08-2026 --no-summary
+
+Any step can be left out with --no-<step>: --no-attendance, --no-report,
+--no-summary, --no-scorecard, --no-dashboard. The usual one is --no-summary on a
+backfill that is correcting scores, where the channels already carry that day's
+digest and re-sending it is noise.
 
 A backfill passes the date to the steps that are about one particular day, and
 posts to Slack for that date — the digest header and the scorecard both name it,
@@ -107,9 +113,23 @@ def resolve_day(argv: list[str]) -> dt.date:
     return day
 
 
+def steps_to_run(argv: list[str], steps: list[tuple]) -> tuple[list[tuple], list[str]]:
+    """Drop any step named by `--no-<label>`; return (kept, skipped).
+
+    A backfill after a genuinely missed day should post everything. A backfill
+    to correct that day's scores usually should not re-send the digest, which
+    the channels already carry — and only the person running it knows which of
+    the two this is. Hence a switch per run rather than a rule.
+    """
+    skipped = [label for label, *_ in steps if f"--no-{label}" in argv]
+    return [s for s in steps if s[0] not in skipped], skipped
+
+
 def main(argv: list[str] | None = None) -> None:
-    day = resolve_day(sys.argv if argv is None else argv)
+    argv = sys.argv if argv is None else argv
+    day = resolve_day(argv)
     backfill = day != dt.date.today()
+    steps, skipped = steps_to_run(argv, STEPS)
 
     LOG.parent.mkdir(exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -120,7 +140,11 @@ def main(argv: list[str] | None = None) -> None:
         if backfill:
             print(f"Backfilling {day.strftime('%d-%m-%Y')}. "
                   f"Slack posts will name that date.")
-        for label, args, dated in STEPS:
+        if skipped:
+            note = f"Skipping: {', '.join(skipped)}."
+            print(note)
+            log.write(note + "\n")
+        for label, args, dated in steps:
             if backfill and dated:
                 args = [*args, "--date", day.isoformat()]
             try:
