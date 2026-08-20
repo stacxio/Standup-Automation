@@ -500,3 +500,76 @@ def test_the_status_line_is_split_per_channel_with_the_tasks():
     stacx = "\n".join(routed["Cstacx"])
     assert "HIR-91-In Progress" in hiro and "WS-228" not in hiro
     assert "WS-228-Review" in stacx and "HIR-91" not in stacx
+
+
+# --- oversized developer blocks -------------------------------------------
+def _bulk_row(name: str, n: int, prefix: str = "HIR") -> dict:
+    picked = [f"{prefix}-{i}" for i in range(100, 100 + n)]
+    return {
+        "name": name, "checkin": ds.CHECKIN_DONE, "previous": [], "picked": picked,
+        "done": [], "task_status": [f"{k}-In Progress" for k in picked],
+        "jira": [[f"{k}: a reasonably long issue summary line",
+                  "description: yes",
+                  "branch: feat/some-longish-branch-name (from comments)",
+                  "commit: b4eda6544adcba92984f2c101ee6fe6db81793b5 (from comments)",
+                  "PR: https://github.com/org/repo/pull/1234 (from comments)",
+                  "PR merged: No update"] for k in picked],
+        "comments": [f"{k}: yes" for k in picked],
+    }
+
+
+def test_a_small_row_is_not_split():
+    assert len(ds.split_row(_bulk_row("Raghul", 3), True)) == 1
+
+
+def test_a_large_row_is_split_into_parts_that_each_fit():
+    parts = ds.split_row(_bulk_row("Whale", 40), True)
+    assert len(parts) > 1
+    for part in parts:
+        assert len(ds.developer_block(part, True)) <= ds.SLACK_CHUNK_CHARS
+
+
+def test_splitting_keeps_every_task_exactly_once_and_in_order():
+    original = _bulk_row("Whale", 40)
+    parts = ds.split_row(original, True)
+    assert [k for p in parts for k in p["picked"]] == original["picked"]
+    assert [s for p in parts for s in p["task_status"]] == original["task_status"]
+    assert [c for p in parts for c in p["comments"]] == original["comments"]
+
+
+def test_a_tasks_lines_are_never_split_across_parts():
+    """Each part's jira blocks stay aligned with its own picked ids."""
+    for part in ds.split_row(_bulk_row("Whale", 40), True):
+        assert len(part["jira"]) == len(part["picked"])
+        for key, block in zip(part["picked"], part["jira"]):
+            assert block[0].startswith(f"{key}:")
+
+
+def test_continuation_parts_are_labelled_and_do_not_repeat_the_day_summary():
+    original = _bulk_row("Whale", 40)
+    original["previous"] = ["HIR-1"]
+    original["done"] = ["HIR-2"]
+    parts = ds.split_row(original, True)
+    assert parts[0]["name"] == "Whale" and parts[0]["done"] == ["HIR-2"]
+    for part in parts[1:]:
+        assert part["name"] == "Whale (continued)"
+        assert part["previous"] == [] and part["done"] == []
+
+
+def test_the_whole_digest_now_respects_the_limit():
+    rows = [_bulk_row(f"Dev{i}", 12) for i in range(5)]
+    msgs = ds.chunk(ds.compose_blocks(rows, TODAY, True))
+    assert max(len(m) for m in msgs) <= ds.SLACK_CHUNK_CHARS
+
+
+def test_a_single_task_too_large_to_split_is_still_emitted():
+    row = _bulk_row("Whale", 1)
+    row["jira"] = [["HIR-100: x", "description: " + "y" * (ds.SLACK_CHUNK_CHARS * 2)]]
+    parts = ds.split_row(row, True)
+    assert len(parts) == 1 and parts[0]["picked"] == ["HIR-100"]
+
+
+def test_splitting_survives_a_row_with_no_jira_data():
+    row = {"name": "Soma", "checkin": ds.CHECKIN_DONE, "previous": [], "picked": [],
+           "done": [], "task_status": [], "jira": [], "comments": []}
+    assert ds.split_row(row, False) == [row]

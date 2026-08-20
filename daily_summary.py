@@ -430,10 +430,72 @@ def developer_block(row: dict, jira_configured: bool) -> str:
     return "\n".join(lines)
 
 
-def compose_blocks(rows: list[dict], today: dt.date, jira_configured: bool) -> list[str]:
-    """Return [header, developer block, ...] — the digest, one entry per person."""
+def _row_slice(row: dict, indices: list[int], *, first: bool) -> dict:
+    """A copy of `row` carrying only `indices` of its tasks.
+
+    The per-task lists are index-aligned, exactly as `_filter_row` relies on.
+    Check-in, previous and done tasks belong to the developer's day rather than
+    to any one task, so they ride on the first part only instead of repeating.
+    """
+    def take(field: str) -> list:
+        values = row.get(field) or []
+        return [values[i] for i in indices] if values else []
+
+    return {
+        **row,
+        "name": row["name"] if first else f"{row['name']} (continued)",
+        "previous": row["previous"] if first else [],
+        "done": row["done"] if first else [],
+        "picked": take("picked"),
+        "task_status": take("task_status"),
+        "jira": take("jira"),
+        "comments": take("comments"),
+    }
+
+
+def split_row(row: dict, jira_configured: bool, limit: int = SLACK_CHUNK_CHARS) -> list[dict]:
+    """One developer's row, split on task boundaries until each part fits.
+
+    `chunk` packs whole blocks and never splits one, so a developer carrying
+    many tasks produced a single message far past the limit — 40 tasks rendered
+    13k characters against a 3.5k target. Splitting here, before rendering,
+    keeps every task's lines together and keeps the parts index-aligned.
+
+    A single task whose own lines exceed the limit cannot be split further and
+    is emitted whole; Slack accepts it, it simply reads long.
+    """
+    tasks = len(row.get("picked") or [])
+    if tasks <= 1 or len(developer_block(row, jira_configured)) <= limit:
+        return [row]
+
+    parts: list[dict] = []
+    current: list[int] = []
+    for index in range(tasks):
+        candidate = current + [index]
+        too_big = len(developer_block(
+            _row_slice(row, candidate, first=not parts), jira_configured)) > limit
+        if current and too_big:
+            parts.append(_row_slice(row, current, first=not parts))
+            current = [index]
+        else:
+            current = candidate
+    if current:
+        parts.append(_row_slice(row, current, first=not parts))
+    return parts
+
+
+def compose_blocks(rows: list[dict], today: dt.date, jira_configured: bool,
+                   limit: int = SLACK_CHUNK_CHARS) -> list[str]:
+    """Return [header, developer block, ...] — the digest, one entry per person.
+
+    A developer with too many tasks for one message becomes several blocks.
+    """
     header = f"*Daily Stand-up Summary — {today.strftime('%d-%m-%Y')}*"
-    return [header] + [developer_block(r, jira_configured) for r in rows]
+    blocks = [header]
+    for row in rows:
+        for part in split_row(row, jira_configured, limit):
+            blocks.append(developer_block(part, jira_configured))
+    return blocks
 
 
 def compose(rows: list[dict], today: dt.date, jira_configured: bool = True) -> str:
