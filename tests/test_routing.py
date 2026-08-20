@@ -39,6 +39,7 @@ def _row(name, checkin, previous, picked, done):
         "previous": previous,
         "picked": picked,
         "done": done,
+        "task_status": [f"{k}-In Progress" for k in picked],
         "jira": [[f"{k}: summary of {k}"] for k in picked],
         "comments": [f"{k}: no comments" for k in picked],
     }
@@ -179,9 +180,29 @@ REAL = ("Latest branch: main GitHub: agb-admin:  agb:  Live URL: "
         "Latest commits: agb-admin: 2934bb5 agb: 11f33ea")
 
 
-def test_commit_reads_yes_when_ids_are_named_in_comments():
+def test_the_exact_commit_ids_from_the_comment_are_shown():
+    """Verbatim, in the order the developer wrote them."""
     got = _lines(_FakeLook(comments=[_comment(REAL)]))
-    assert got["commit"] == f"{ds.LINKED} {ds.FROM_COMMENTS}"
+    assert got["commit"] == f"2934bb5, 11f33ea {ds.FROM_COMMENTS}"
+
+
+def test_ids_are_not_shortened_or_reformatted():
+    full = "a" * 3 + "1" * 37          # a 40-char sha
+    got = _lines(_FakeLook(comments=[_comment(f"Latest commit: {full}")]))
+    assert got["commit"].startswith(full)
+
+
+def test_a_long_list_of_commits_is_capped_but_counted():
+    ids = [f"{i}abc123" for i in range(9)]
+    got = _lines(_FakeLook(comments=[_comment("Latest commits: " + " ".join(ids))]))
+    assert got["commit"].startswith(", ".join(ids[:ds.MAX_COMMITS_SHOWN]))
+    assert f"(+{9 - ds.MAX_COMMITS_SHOWN} more)" in got["commit"]
+
+
+def test_exactly_the_cap_needs_no_more_marker():
+    ids = [f"{i}abc123" for i in range(ds.MAX_COMMITS_SHOWN)]
+    got = _lines(_FakeLook(comments=[_comment("Latest commits: " + " ".join(ids))]))
+    assert "more)" not in got["commit"]
 
 
 def test_the_fallback_is_labelled_so_the_source_is_never_ambiguous():
@@ -193,7 +214,7 @@ def test_the_dev_panel_wins_and_is_not_labelled():
                           "pull_requests": []},
                      comments=[_comment(REAL)])
     got = _lines(look)
-    assert got["commit"] == ds.LINKED          # yes, and no "(from comments)"
+    assert got["commit"] == "abc1234"          # panel id, no "(from comments)"
     assert got["branch"] == "feat/x"
 
 
@@ -207,7 +228,10 @@ def test_the_dev_panel_wins_and_is_not_labelled():
     "Commit ID: https://github.com/o/r/commit/2934bb5.",
 ])
 def test_a_labelled_commit_url_is_picked_up(body):
-    assert _lines(_FakeLook(comments=[_comment(body)]))["commit"].startswith(ds.LINKED)
+    """The url itself is the id shown — it is what the developer recorded."""
+    commit = _lines(_FakeLook(comments=[_comment(body)]))["commit"]
+    assert commit != ds.NOT_LINKED
+    assert commit.startswith("https://") or commit.startswith("2934bb5")
 
 
 @pytest.mark.parametrize("body", [
@@ -238,7 +262,6 @@ def test_a_pr_url_in_a_comment_is_picked_up_and_merge_state_is_not_guessed():
     look = _FakeLook(comments=[_comment("PR up: https://github.com/o/r/pull/42")])
     got = _lines(look)
     assert got["PR"] == "https://github.com/o/r/pull/42 (from comments)"
-    assert got["PR merged"] == ds.UNKNOWN      # prose cannot tell us; "no" would be a claim
 
 
 def test_prose_about_a_pr_without_a_url_is_not_a_pr():
@@ -246,16 +269,11 @@ def test_prose_about_a_pr_without_a_url_is_not_a_pr():
     assert got["PR"] == ds.NOT_LINKED
 
 
-def test_branch_is_never_guessed_from_prose():
-    """"Latest branch: main GitHub: ..." has no reliable shape to parse."""
-    assert _lines(_FakeLook(comments=[_comment(REAL)]))["branch"] == ds.NOT_LINKED
-
-
 def test_nothing_anywhere_still_reads_not_linked():
     got = _lines(_FakeLook(comments=[_comment("Working on it, no blockers yet.")]))
     assert got["commit"] == ds.NOT_LINKED
     assert got["PR"] == ds.NOT_LINKED
-    assert got["PR merged"] == "no"
+    assert got["PR merged"] == ds.MERGED_NO_UPDATE
 
 
 def test_a_false_positive_hex_word_is_not_reported_as_a_commit():
@@ -279,3 +297,206 @@ def test_issue_that_cannot_be_read_is_reported_not_crashed():
             return None
 
     assert "could not read" in ds.issue_block("HIR-91", Gone())[0]
+
+
+# --- branch and PR read from prose (temporary, until GitHub is linked) -----
+@pytest.mark.parametrize("body,expected", [
+    (REAL, "main"),                                    # "Latest branch: main GitHub: ..."
+    ("branch: feature/HIR-91-pricing", "feature/HIR-91-pricing"),
+    ("Branch - release/1.2", "release/1.2"),
+    ("branch name: dev", "dev"),
+])
+def test_branch_is_read_from_a_labelled_comment(body, expected):
+    got = _lines(_FakeLook(comments=[_comment(body)]))
+    assert got["branch"] == f"{expected} {ds.FROM_COMMENTS}"
+
+
+def test_the_branch_stops_at_the_next_label_not_at_the_end_of_the_line():
+    """The real comment continues 'main GitHub: agb-admin:' after the branch."""
+    assert _lines(_FakeLook(comments=[_comment(REAL)]))["branch"].startswith("main ")
+
+
+@pytest.mark.parametrize("body", [
+    "branch: N/A", "branch: none", "Latest branch: TBD", "branch: -",
+])
+def test_placeholder_words_are_not_reported_as_a_branch(body):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["branch"] == ds.NOT_LINKED
+
+
+def test_no_branch_label_means_no_branch():
+    got = _lines(_FakeLook(comments=[_comment("Worked on the pricing screen today.")]))
+    assert got["branch"] == ds.NOT_LINKED
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("PR: #42", "#42"),
+    ("Pull request - https://github.com/o/r/pull/7", "https://github.com/o/r/pull/7"),
+    ("PR link: https://short.link/pr", "https://short.link/pr"),
+])
+def test_pr_is_read_from_a_labelled_comment(body, expected):
+    got = _lines(_FakeLook(comments=[_comment(body)]))
+    assert got["PR"] == f"{expected} {ds.FROM_COMMENTS}"
+
+
+@pytest.mark.parametrize("body", ["PR: raised", "PR: pending", "PR - none"])
+def test_placeholder_words_are_not_reported_as_a_pr(body):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["PR"] == ds.NOT_LINKED
+
+
+def test_the_dev_panel_still_wins_for_every_field():
+    look = _FakeLook(
+        dev={"branches": ["real/branch"], "commits": ["abc1234"],
+             "pull_requests": [{"url": "https://real/pr/1", "name": "", "id": "1",
+                                "status": "MERGED"}]},
+        comments=[_comment(REAL + " PR: #99 branch: wrong/branch")])
+    got = _lines(look)
+    assert got["branch"] == "real/branch"          # no "(from comments)" anywhere
+    assert got["commit"] == "abc1234"
+    assert got["PR"] == "https://real/pr/1"
+    assert got["PR merged"] == "Yes"
+
+
+def test_a_partially_linked_issue_keeps_its_real_data():
+    """Only the empty fields fall back to prose."""
+    look = _FakeLook(dev={"branches": ["real/branch"], "commits": [], "pull_requests": []},
+                     comments=[_comment(REAL)])
+    got = _lines(look)
+    assert got["branch"] == "real/branch"                       # panel
+    assert got["commit"].endswith(ds.FROM_COMMENTS)             # prose
+
+
+# --- the blank-template comment that broke the first attempt --------------
+# A real BHA-117 comment, posted with every field left empty.
+BLANK_TEMPLATE = "branch: commit: PR: not raised yet PR merged: no PR exists"
+
+
+def test_an_empty_template_reports_nothing_rather_than_the_next_label():
+    got = _lines(_FakeLook(comments=[_comment(BLANK_TEMPLATE)]))
+    assert got["branch"] == ds.NOT_LINKED      # not "commit"
+    assert got["PR"] == ds.NOT_LINKED          # not "not"
+    assert got["commit"] == ds.NOT_LINKED
+
+
+@pytest.mark.parametrize("body", [
+    "branch: commit: abc1234",                 # label immediately after label
+    "branch: PR: #12",
+])
+def test_a_label_is_never_taken_as_a_branch_name(body):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["branch"] == ds.NOT_LINKED
+
+
+@pytest.mark.parametrize("body", ["PR: not raised yet", "PR: raised", "PR - soon"])
+def test_a_pr_needs_a_url_or_a_number(body):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["PR"] == ds.NOT_LINKED
+
+
+def test_the_same_branch_written_two_ways_is_listed_once():
+    """"Latest branch: main" and "Live Branch Name : Main" are one branch."""
+    body = "Latest branch: main ... Live Branch Name : Main"
+    assert _lines(_FakeLook(comments=[_comment(body)]))["branch"] == \
+        f"main {ds.FROM_COMMENTS}"
+
+
+def test_genuinely_different_branches_are_both_listed():
+    body = "branch: feature/a and branch: feature/b"
+    got = _lines(_FakeLook(comments=[_comment(body)]))["branch"]
+    assert got == f"feature/a, feature/b {ds.FROM_COMMENTS}"
+
+
+# --- PR merged: the developer's own word, or "No update" ------------------
+@pytest.mark.parametrize("body,expected", [
+    ("PR merged: yes", "Yes"),
+    ("PR merged - Y", "Yes"),
+    ("Pull request merged: merged on the 12th", "Yes"),
+    ("PR merged: no", "No"),
+    ("PR merged: no PR exists", "No"),          # the real BHA-117 wording
+    ("PR merged - not yet", "No"),
+    ("PR merged: pending", "No"),
+])
+def test_merge_state_is_read_from_the_comment(body, expected):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["PR merged"] == expected
+
+
+@pytest.mark.parametrize("body", [
+    "Worked on the pricing screen today.",       # says nothing about a PR
+    "PR merged:",                                # the label with no value
+    "PR merged: maybe",                          # not classifiable
+])
+def test_silence_about_merging_reads_as_no_update(body):
+    assert _lines(_FakeLook(comments=[_comment(body)]))["PR merged"] == ds.MERGED_NO_UPDATE
+
+
+def test_no_comments_at_all_reads_as_no_update():
+    assert _lines(_FakeLook(comments=[]))["PR merged"] == ds.MERGED_NO_UPDATE
+
+
+def test_the_newest_comment_wins():
+    """issue_comments returns newest-first, so the latest word is the answer."""
+    look = _FakeLook(comments=[_comment("PR merged: yes"), _comment("PR merged: no")])
+    assert _lines(look)["PR merged"] == "Yes"
+
+
+def test_a_merged_pr_in_the_dev_panel_still_wins():
+    look = _FakeLook(
+        dev={"branches": [], "commits": [],
+             "pull_requests": [{"url": "https://real/pr/1", "name": "", "id": "1",
+                                "status": "MERGED"}]},
+        comments=[_comment("PR merged: no")])
+    assert _lines(look)["PR merged"] == "Yes"
+
+
+def test_an_unmerged_panel_pr_with_no_comment_reads_no():
+    look = _FakeLook(
+        dev={"branches": [], "commits": [],
+             "pull_requests": [{"url": "https://real/pr/1", "name": "", "id": "1",
+                                "status": "OPEN"}]},
+        comments=[])
+    assert _lines(look)["PR merged"] == "No"
+
+
+# --- Task status line -----------------------------------------------------
+class _StatusLook(_FakeLook):
+    """Returns a different status per key."""
+
+    def __init__(self, statuses):
+        super().__init__()
+        self.statuses = statuses
+
+    def detail(self, key):
+        if key not in self.statuses:
+            return None
+        return {**self._detail, "key": key, "status_name": self.statuses[key]}
+
+
+def test_status_entry_uses_the_live_jira_status_verbatim():
+    look = _StatusLook({"HIR-91": "In Progress", "HIR-92": "Review", "HIR-90": "Done"})
+    assert ds.status_entry("HIR-91", look) == "HIR-91-In Progress"
+    assert ds.status_entry("HIR-92", look) == "HIR-92-Review"   # not normalised to "In Review"
+    assert ds.status_entry("HIR-90", look) == "HIR-90-Done"
+
+
+def test_an_unreadable_issue_reports_unknown_rather_than_crashing():
+    assert ds.status_entry("HIR-99", _StatusLook({})) == f"HIR-99-{ds.UNKNOWN}"
+
+
+def test_the_status_line_lists_every_picked_task():
+    row = _row("Raghul", ds.CHECKIN_DONE, [], ["HIR-91", "HIR-92", "HIR-90"], [])
+    row["task_status"] = ["HIR-91-In Progress", "HIR-92-Review", "HIR-90-Done"]
+    block = ds.developer_block(row, jira_configured=True)
+    assert "Task status: HIR-91-In Progress, HIR-92-Review, HIR-90-Done" in block
+
+
+def test_a_developer_with_no_tasks_shows_no_update_for_status():
+    row = _row("Soma", ds.CHECKIN_DONE, [], [], [])
+    assert f"Task status: {ds.NO_UPDATE}" in ds.developer_block(row, jira_configured=True)
+
+
+def test_the_status_line_is_split_per_channel_with_the_tasks():
+    """A mixed-prefix developer must not leak another project's statuses."""
+    row = _row("Raghul", ds.CHECKIN_DONE, [], ["HIR-91", "WS-228"], [])
+    row["task_status"] = ["HIR-91-In Progress", "WS-228-Review"]
+    routed = ds.route_blocks([row], _cfg(), TODAY, jira_configured=True)
+    hiro = "\n".join(routed["Chiro"])
+    stacx = "\n".join(routed["Cstacx"])
+    assert "HIR-91-In Progress" in hiro and "WS-228" not in hiro
+    assert "WS-228-Review" in stacx and "HIR-91" not in stacx

@@ -72,13 +72,54 @@ UNKNOWN = "unknown"
 NO_TASKS = "no task picked today"
 NO_JIRA_CFG = "Jira not configured."
 FROM_COMMENTS = "(from comments)"
-# The commit line answers "is there a commit for this task, yes or no" — the id
-# itself is in the scorecard's evidence column for anyone who needs to trace it.
-LINKED = "Yes"
+
+# Commit ids are shown verbatim — exactly the id the developer recorded, not a
+# shortened or reformatted one, so it can be pasted straight into `git show`.
+# One issue in this Jira carries 19 commits in a single comment, so the line is
+# capped; the count of the remainder still tells you they exist.
+MAX_COMMITS_SHOWN = 3
+
+# --------------------------------------------------------------------------
+# Reading SCM facts out of comment prose.
+#
+# TEMPORARY. This exists only because no SCM is connected to this Jira, so the
+# development panel is empty on every issue and the team records the branch,
+# commit and PR by typing them into a comment. Connect GitHub to Jira and the
+# panel becomes authoritative again — the panel is always preferred below, so
+# this whole path simply stops being reached. Prose is a weaker source and is
+# always labelled as such in the digest.
+# --------------------------------------------------------------------------
 
 # A pull request named in prose: GitHub /pull/N, Bitbucket /pull-requests/N,
-# GitLab /merge_requests/N. Only a real URL counts — "raised the PR" is not one.
+# GitLab /merge_requests/N.
 _PR_URL = re.compile(r"https?://\S+?/(?:pull|pull-requests|merge_requests)/\d+", re.I)
+# ...or a labelled one: "PR: #42", "Pull request - https://…", "PR link: …".
+_PR_LABEL = re.compile(r"\b(?:pull\s*requests?|prs?)\b\s*(?:link|url|id|no\.?)?\s*[:\-–]\s*(\S+)", re.I)
+# A branch is a single token — git forbids spaces — so capture one token after
+# the label. That is what makes "Latest branch: main GitHub: agb-admin:" yield
+# "main" rather than swallowing the labels that follow it.
+#
+# The trailing (?![\w./-:]) is load-bearing. Developers post the template with
+# the fields left blank — "branch: commit: PR: not raised yet" — and without it
+# the branch reads as "commit", i.e. the *next label* becomes the value. A token
+# followed by a colon is a label, never a value, and refusing to backtrack
+# inside the token class stops "commit:" degrading to "commi".
+_BRANCH_LABEL = re.compile(
+    r"(?:latest\s+)?branch(?:\s*name)?\s*[:\-–]\s*([\w./-]+)(?![\w./-:])", re.I
+)
+# Words developers write where a value would go; not branch names or PRs.
+_PLACEHOLDERS = {"na", "n/a", "none", "nil", "no", "yes", "tbd", "pending", "raised",
+                 "done", "created", "wip", "-", "--", "nan", "null", "todo",
+                 "not", "yet", "branch", "commit", "pr", "url", "link"}
+
+# "PR merged: yes" / "PR merged - no PR exists" / "Pull request merged : Y".
+_MERGED_LABEL = re.compile(
+    r"\b(?:pr|pull\s*requests?)\s*(?:is\s*)?merged\b\s*[:\-–]?\s*([^\n]{0,40})", re.I
+)
+_MERGED_YES = {"yes", "y", "merged", "done", "true", "completed", "complete"}
+_MERGED_NO = {"no", "n", "not", "false", "pending", "yet", "nope", "na", "n/a"}
+# Shown when the developer has said nothing about whether the PR merged.
+MERGED_NO_UPDATE = "No update"
 
 # Slack rejects very long messages; the digest is split on developer blocks.
 SLACK_CHUNK_CHARS = 3500
@@ -135,25 +176,98 @@ def _same_person(author: str, short: str) -> bool:
 # --------------------------------------------------------------------------
 # Per-issue rendering
 # --------------------------------------------------------------------------
-def _scm_from_comments(key: str, look: _JiraLookup) -> tuple[list[str], list[str]]:
-    """Commit ids and PR urls named in the issue's comments -> (commits, prs).
+def _is_value(token: str) -> bool:
+    """Whether a captured token is a real value rather than a placeholder word."""
+    return bool(token) and token.strip().lower().strip(".,;") not in _PLACEHOLDERS
+
+
+def _merged_from_text(value: str) -> str | None:
+    """Read "PR merged: ..." as Yes / No, or None when it says nothing useful.
+
+    Classified on the first word, so "no PR exists" reads as No and "Merged on
+    the 12th" reads as Yes. An empty value ("PR merged:" with nothing after it,
+    which is how the blank template arrives) yields None, not a guess.
+    """
+    words = value.strip().lower().strip(":-–").split()
+    if not words:
+        return None
+    first = words[0].strip(".,;:")
+    if first in _MERGED_YES:
+        return "Yes"
+    if first in _MERGED_NO:
+        return "No"
+    return None
+
+
+def _is_pr_ref(token: str) -> bool:
+    """A pull request is a url or a number — "not raised yet" is neither.
+
+    Without this, a blank template line ("PR: not raised yet") reports "not" as
+    the pull request.
+    """
+    value = token.strip().rstrip(".,;")
+    return value.lower().startswith("http") or any(ch.isdigit() for ch in value)
+
+
+def _scm_from_comments(key: str, look: _JiraLookup) -> dict[str, list[str]]:
+    """Branch, commit and PR named in the issue's comments.
 
     Jira's development panel is populated only by a real GitHub/Bitbucket/GitLab
     integration; text typed into a comment never reaches it. With no SCM linked
     to this Jira the panel is empty on every issue, while the team's habit is to
-    paste the branch, commit and PR into a comment — so "not linked" was being
-    reported over work that plainly exists.
+    paste all three into a comment — so "not linked" was being reported over
+    work that plainly exists.
 
-    Reads the same commit-id detector the scorecard uses, so the digest and the
-    score cannot disagree about whether an issue has a commit.
+    Commits reuse the scorecard's detector, so the digest and the score cannot
+    disagree about whether an issue has one. Branch and PR are digest-only:
+    nothing scores them, so a looser read costs nobody points.
     """
-    commits: list[str] = []
-    prs: list[str] = []
+    found: dict = {"branches": [], "commits": [], "pull_requests": [], "merged": None}
+
+    def add(field: str, value: str, *, fold_case: bool = False) -> None:
+        value = value.strip().rstrip(".,;")
+        if not _is_value(value):
+            return
+        # "Latest branch: main" and "Live Branch Name : Main" are one branch
+        # written twice, so branches dedupe case-insensitively; commit ids and
+        # urls are compared exactly.
+        seen = [v.lower() for v in found[field]] if fold_case else found[field]
+        if (value.lower() if fold_case else value) not in seen:
+            found[field].append(value)
+
     for comment in (look.comments(key) or []):
         body = comment.get("body", "")
-        commits += [c for c in scorecard.commit_ids_in_text(body) if c not in commits]
-        prs += [u for u in _PR_URL.findall(body) if u not in prs]
-    return commits, prs
+        for commit in scorecard.commit_ids_in_text(body):
+            add("commits", commit)
+        for url in _PR_URL.findall(body):
+            add("pull_requests", url)
+        for token in _PR_LABEL.findall(body):
+            if _is_pr_ref(token):
+                add("pull_requests", token)
+        for branch in _BRANCH_LABEL.findall(body):
+            add("branches", branch, fold_case=True)
+        # The newest statement wins: comments are returned newest-first, so the
+        # first one that says anything is the developer's latest word on it.
+        if found["merged"] is None:
+            for stated in _MERGED_LABEL.findall(body):
+                verdict = _merged_from_text(stated)
+                if verdict:
+                    found["merged"] = verdict
+                    break
+    return found
+
+
+def _render_ids(ids: list[str]) -> str:
+    """Commit ids for the digest line, verbatim and capped.
+
+    Shown exactly as recorded — not shortened — so an id can be pasted straight
+    into `git show`. Beyond MAX_COMMITS_SHOWN the remainder is counted rather
+    than listed, because a single comment here can carry nineteen of them and
+    Slack rejects very long messages.
+    """
+    shown = ", ".join(ids[:MAX_COMMITS_SHOWN])
+    extra = len(ids) - MAX_COMMITS_SHOWN
+    return f"{shown} (+{extra} more)" if extra > 0 else shown
 
 
 def issue_block(key: str, look: _JiraLookup) -> list[str]:
@@ -168,33 +282,46 @@ def issue_block(key: str, look: _JiraLookup) -> list[str]:
     prs = dev["pull_requests"]
 
     pr_urls = [p["url"] or p["name"] or p["id"] for p in prs if (p["url"] or p["name"] or p["id"])]
-    merged = "yes" if any(p["status"] == "MERGED" for p in prs) else "no"
 
     # The panel is authoritative; fall back per field so a partially linked
-    # issue keeps the real data and only the gaps come from prose.
-    commit_note, pr_note = "", ""
-    if not commits or not pr_urls:
-        found_commits, found_prs = _scm_from_comments(key, look)
-        if not commits and found_commits:
-            commits, commit_note = found_commits, f" {FROM_COMMENTS}"
-        if not pr_urls and found_prs:
-            pr_urls, pr_note = found_prs, f" {FROM_COMMENTS}"
-            # Prose cannot tell us whether a PR merged; "no" would be a claim.
-            merged = UNKNOWN
+    # issue keeps its real data and only the gaps come from prose.
+    notes = {"branches": "", "commits": "", "pull_requests": ""}
+    merged = "Yes" if any(p["status"] == "MERGED" for p in prs) else None
+    if not (branches and commits and pr_urls and prs):
+        found = _scm_from_comments(key, look)
+        if not branches and found["branches"]:
+            branches, notes["branches"] = found["branches"], f" {FROM_COMMENTS}"
+        if not commits and found["commits"]:
+            commits, notes["commits"] = found["commits"], f" {FROM_COMMENTS}"
+        if not pr_urls and found["pull_requests"]:
+            pr_urls, notes["pull_requests"] = found["pull_requests"], f" {FROM_COMMENTS}"
+        if merged is None:
+            # Whatever the developer said, or nothing if they said nothing —
+            # "no" would claim the PR did not merge when we simply do not know.
+            merged = found["merged"] or ("No" if prs else None)
 
-    commit = f"{LINKED}{commit_note}" if commits else NOT_LINKED
+    def line(label: str, values: list[str], field: str) -> str:
+        return (f"{label}: {_render_ids(values)}{notes[field]}" if values
+                else f"{label}: {NOT_LINKED}")
 
     return [
         f"{key}: {detail['summary'] or UNKNOWN}",
         f"description: {'yes' if detail['description'] else 'no'}",
-        # Branch is not derived from prose: a branch name in a sentence has no
-        # reliable shape ("Latest branch: main GitHub: ..."), and guessing one
-        # would put a wrong name in front of the team.
-        f"branch: {', '.join(branches) if branches else NOT_LINKED}",
-        f"commit: {commit}",
-        f"PR: {', '.join(pr_urls) + pr_note if pr_urls else NOT_LINKED}",
-        f"PR merged: {merged if (prs or pr_urls) else 'no'}",
+        line("branch", branches, "branches"),
+        line("commit", commits, "commits"),
+        line("PR", pr_urls, "pull_requests"),
+        f"PR merged: {merged or MERGED_NO_UPDATE}",
     ]
+
+
+def status_entry(key: str, look: _JiraLookup) -> str:
+    """One issue's live Jira status, as "HIR-91-In Progress".
+
+    The status name is taken verbatim from Jira — "Review", not a normalised
+    "In Review" — so the digest says exactly what the board says.
+    """
+    detail = look.detail(key)
+    return f"{key}-{(detail or {}).get('status_name') or UNKNOWN}"
 
 
 def comment_line(key: str, short: str, look: _JiraLookup) -> str:
@@ -254,6 +381,8 @@ def gather(cfg: SlackConfig, jira_cfg, today: dt.date) -> list[dict]:
             "previous": previous,
             "picked": picked,
             "done": done,
+            # Index-aligned with `picked`, so per-channel routing filters it too.
+            "task_status": [status_entry(k, look) for k in picked] if jira_cfg else [],
             "jira": [issue_block(k, look) for k in picked] if jira_cfg else [],
             "comments": [comment_line(k, short, look) for k in picked] if jira_cfg else [],
         })
@@ -276,6 +405,7 @@ def developer_block(row: dict, jira_configured: bool) -> str:
         f"Previous task: {_join(row['previous'])}",
         f"Task picked: {_join(row['picked'])}",
         f"Task done: {_join(row['done'])}",
+        f"Task status: {_join(row.get('task_status') or [])}",
         "",
         "jira:",
     ]
@@ -350,6 +480,8 @@ def _filter_row(row: dict, channel: str, cfg: SlackConfig) -> dict:
         "previous": [k for k in row["previous"] if _channel_of(cfg, k) == channel],
         "picked": [row["picked"][i] for i in keep],
         "done": [k for k in row["done"] if _channel_of(cfg, k) == channel],
+        "task_status": ([row["task_status"][i] for i in keep]
+                        if row.get("task_status") else []),
         "jira": [row["jira"][i] for i in keep] if row["jira"] else [],
         "comments": [row["comments"][i] for i in keep] if row["comments"] else [],
     }
