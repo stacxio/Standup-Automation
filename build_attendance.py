@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from standup_summarizer.config import SlackConfig  # noqa: E402
+from standup_summarizer import gsheets  # noqa: E402
 from standup_summarizer.dates import day_from_argv  # noqa: E402
 from standup_summarizer.fetch import (  # noqa: E402
     _SlackFetcher,
@@ -289,12 +290,8 @@ def _rgb(hex_color: str) -> dict:
 
 def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
     import gspread
-    from google.oauth2.service_account import Credentials
 
-    creds = Credentials.from_service_account_file(
-        key_path, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
+    sh = gsheets.open_spreadsheet(spreadsheet_id, key_path)
 
     keep = {"Master", "Summary", "Leaves"} | {title for title, *_ in month_tabs}
 

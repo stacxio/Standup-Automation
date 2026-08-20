@@ -47,7 +47,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer import jira, scorecard as sc  # noqa: E402
+from standup_summarizer import gsheets, jira, scorecard as sc  # noqa: E402
 from standup_summarizer.config import (  # noqa: E402
     ArchiveConfig,
     JiraConfig,
@@ -298,13 +298,7 @@ def open_sheet():
         print("Skipping Google Sheets — SPREADSHEET_ID or service-account key not configured.")
         return None, None
 
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    creds = Credentials.from_service_account_file(
-        str(key_path), scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
+    sh = gsheets.open_spreadsheet(spreadsheet_id, key_path)
     return sh, f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
 
 
@@ -315,7 +309,8 @@ def read_tab(sh, title: str) -> list[list[str]]:
     import gspread
 
     try:
-        values = sh.worksheet(title).get_all_values()
+        ws = gsheets.retry_api(lambda: sh.worksheet(title), describe=f"open tab '{title}'")
+        values = gsheets.retry_api(ws.get_all_values, describe=f"read tab '{title}'")
     except gspread.WorksheetNotFound:
         return []
     return values[1:] if values else []
@@ -333,12 +328,19 @@ def write_tab(sh, title: str, header: list[str], rows: list[list[str]]) -> None:
 
     values = [header] + rows
     try:
-        ws = sh.worksheet(title)
+        ws = gsheets.retry_api(lambda: sh.worksheet(title), describe=f"open tab '{title}'")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=title, rows=len(values) + 20, cols=len(header) + 2)
-    ws.clear()
-    ws.resize(rows=max(len(values) + 10, 20), cols=max(len(header) + 1, 8))
-    ws.update(values=values, range_name="A1", value_input_option="RAW")
+        ws = gsheets.retry_api(
+            lambda: sh.add_worksheet(title=title, rows=len(values) + 20, cols=len(header) + 2),
+            describe=f"create tab '{title}'")
+    # Clear-then-set, so repeating after a partial write lands on the same result.
+    gsheets.retry_api(ws.clear, describe=f"clear '{title}'")
+    gsheets.retry_api(
+        lambda: ws.resize(rows=max(len(values) + 10, 20), cols=max(len(header) + 1, 8)),
+        describe=f"resize '{title}'")
+    gsheets.retry_api(
+        lambda: ws.update(values=values, range_name="A1", value_input_option="RAW"),
+        describe=f"write '{title}'")
     try:
         ws.freeze(rows=1, cols=1)
         ws.format(f"A1:{gspread.utils.rowcol_to_a1(1, len(header))}", {

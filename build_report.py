@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer import jira  # noqa: E402
+from standup_summarizer import gsheets, jira  # noqa: E402
 from standup_summarizer.config import JiraConfig, ReasoningConfig, SlackConfig  # noqa: E402
 from standup_summarizer.engines import build_engine  # noqa: E402
 from standup_summarizer.fetch import (  # noqa: E402
@@ -242,15 +242,11 @@ def push_to_sheets(values: list[list[str]]) -> str | None:
         return None
 
     import gspread
-    from google.oauth2.service_account import Credentials
 
     header, rows = values[0], values[1:]
     by_month = group_by_month(rows)
 
-    creds = Credentials.from_service_account_file(
-        str(key_path), scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    sh = gspread.authorize(creds).open_by_key(spreadsheet_id)
+    sh = gsheets.open_spreadsheet(spreadsheet_id, key_path)
 
     written = []
     for idx, (year, month) in enumerate(sorted(by_month)):
