@@ -223,6 +223,9 @@ class ScoreConfig:
     cutoff_hour: int = 18
     recompute_days: int = 3
     ops_channel_id: str | None = None
+    post_channels: tuple[str, ...] = ()
+    """Channels the daily scorecard posts to. Empty means "just the check-in
+    channel" (SLACK_CHANNEL_ID), which is the historical behaviour."""
     dm_enabled: bool = False
     public_scores: bool = True
     """Post every developer's score to the check-in channel each day. When
@@ -272,6 +275,9 @@ class ScoreConfig:
             cutoff_hour=_env_int("SCORE_CUTOFF_HOUR", 18),
             recompute_days=_env_int("SCORE_RECOMPUTE_DAYS", 3),
             ops_channel_id=(_env("SCORE_OPS_CHANNEL_ID") or None),
+            post_channels=tuple(
+                c.strip() for c in (_env("SCORE_POST_CHANNELS") or "").split(",") if c.strip()
+            ),
             dm_enabled=_env_bool("SCORE_DM_ENABLED", False),
             public_scores=_env_bool("SCORE_PUBLIC_SCORES", True),
             public_order=(_env("SCORE_PUBLIC_ORDER", "roster") or "roster").strip().lower(),
@@ -280,6 +286,16 @@ class ScoreConfig:
                 if p.strip()
             ),
         )
+
+    def score_channels(self, default_channel: str) -> list[str]:
+        """Where the daily scorecard posts, in order, without repeats.
+
+        Defaults to the check-in channel alone. Listing channels explicitly lets
+        the score go somewhere quieter than the team channel without moving the
+        failure alerts, which have their own destination.
+        """
+        channels = list(self.post_channels) or [default_channel]
+        return list(dict.fromkeys(c for c in channels if c))
 
     def known_prefixes(self, *fallbacks: dict) -> frozenset[str]:
         """Configured prefixes, else those the other agents already route on.

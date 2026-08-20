@@ -521,13 +521,11 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     print(f"\nWrote '{DAILY_TAB}' and '{day.strftime(MONTH_TAB_FMT)}'.")
 
     if notify:
-        if score_cfg.public_scores:
-            # Every developer's score, in one channel post.
-            post_slack(cfg, cfg.channel_id,
-                       sc.compose_slack_roster(records, order=score_cfg.public_order),
-                       "daily scorecard")
-        else:
-            post_slack(cfg, cfg.channel_id, sc.compose_slack_team(records), "team aggregate")
+        text = (sc.compose_slack_roster(records, order=score_cfg.public_order)
+                if score_cfg.public_scores else sc.compose_slack_team(records))
+        label = "daily scorecard" if score_cfg.public_scores else "team aggregate"
+        for channel in score_cfg.score_channels(cfg.channel_id):
+            post_slack(cfg, channel, text, label)
         if score_cfg.dm_enabled:
             dm_developers(cfg, records, slack_user_ids(cfg, name_map))
         elif not score_cfg.public_scores:

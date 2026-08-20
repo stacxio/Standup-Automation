@@ -277,3 +277,39 @@ def test_a_blank_total_reads_back_as_none_not_zero():
     records = bs._records_from_rows([row], TODAY)
     assert records[0]["total"] is None
     assert sc.period_average(records) is None
+
+
+# --- where the daily scorecard posts --------------------------------------
+def _score_cfg(**kw):
+    from standup_summarizer.config import ScoreConfig
+    return ScoreConfig(weights=sc.Weights(), thresholds=sc.Thresholds(), **kw)
+
+
+def test_the_scorecard_posts_to_the_check_in_channel_by_default():
+    assert _score_cfg().score_channels("C-checkin") == ["C-checkin"]
+
+
+def test_listed_channels_replace_the_default():
+    cfg = _score_cfg(post_channels=("C-checkin", "C-ops"))
+    assert cfg.score_channels("C-checkin") == ["C-checkin", "C-ops"]
+
+
+def test_the_score_can_go_somewhere_other_than_the_team_channel():
+    """Listing only the ops channel moves the score off the team channel."""
+    assert _score_cfg(post_channels=("C-ops",)).score_channels("C-checkin") == ["C-ops"]
+
+
+def test_a_channel_listed_twice_is_posted_to_once():
+    cfg = _score_cfg(post_channels=("C-ops", "C-ops", "C-checkin"))
+    assert cfg.score_channels("C-checkin") == ["C-ops", "C-checkin"]
+
+
+def test_blank_entries_are_ignored():
+    assert _score_cfg(post_channels=("", "C-ops", "")).score_channels("C-x") == ["C-ops"]
+
+
+def test_failure_alerts_keep_their_own_destination():
+    """Adding the score to a channel must not move the data-failure alerts."""
+    cfg = _score_cfg(post_channels=("C-ops",), ops_channel_id="C-alerts")
+    assert cfg.score_channels("C-checkin") == ["C-ops"]
+    assert cfg.ops_channel_id == "C-alerts"
