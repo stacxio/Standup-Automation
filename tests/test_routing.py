@@ -639,3 +639,41 @@ def test_a_routed_developer_with_many_tasks_is_still_split_into_messages():
     routed = ds.route_blocks([row], _cfg_dev(), TODAY, True)
     assert set(routed) == {"Cstacx"}
     assert max(len(m) for m in ds.chunk(routed["Cstacx"])) <= ds.SLACK_CHUNK_CHARS
+
+
+# --- Previous task: the last stand-up's ids, not the finished ones ---------
+def test_previous_is_the_last_standup_that_named_a_ticket():
+    days = {"2026-08-17": ["HIR-1"], "2026-08-18": ["HIR-2", "HIR-3"]}
+    assert ds._previous_tasks(days, "2026-08-19") == ["HIR-2", "HIR-3"]
+
+
+def test_previous_reports_unfinished_work_too():
+    """The change: carrying the same open ticket for days used to read
+    'no update', which is exactly when seeing it matters."""
+    assert ds._previous_tasks({"2026-08-18": ["HIR-91"]}, "2026-08-19") == ["HIR-91"]
+
+
+def test_previous_skips_back_over_days_with_no_ticket_id():
+    days = {"2026-08-14": ["WS-9"], "2026-08-17": [], "2026-08-18": []}
+    assert ds._previous_tasks(days, "2026-08-19") == ["WS-9"]
+
+
+def test_previous_ignores_today_and_anything_after_it():
+    days = {"2026-08-19": ["HIR-5"], "2026-08-20": ["HIR-6"], "2026-08-18": ["HIR-4"]}
+    assert ds._previous_tasks(days, "2026-08-19") == ["HIR-4"]
+
+
+def test_previous_is_empty_when_there_is_no_earlier_standup():
+    assert ds._previous_tasks({"2026-08-19": ["HIR-5"]}, "2026-08-19") == []
+    assert ds._previous_tasks({}, "2026-08-19") == []
+
+
+def test_previous_keeps_the_order_the_developer_wrote_them():
+    days = {"2026-08-18": ["WS-259", "WS-256", "WS-257"]}
+    assert ds._previous_tasks(days, "2026-08-19") == ["WS-259", "WS-256", "WS-257"]
+
+
+def test_previous_needs_no_jira_lookup():
+    """It reads Slack history only, so it survives Jira being unreachable."""
+    import inspect
+    assert "look" not in inspect.signature(ds._previous_tasks).parameters

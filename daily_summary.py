@@ -340,12 +340,22 @@ def comment_line(key: str, short: str, look: _JiraLookup) -> str:
 # --------------------------------------------------------------------------
 # Gather
 # --------------------------------------------------------------------------
-def _previous_done(days: dict[str, list[str]], today_iso: str, look: _JiraLookup) -> list[str]:
-    """Jira ids completed on the most recent day before today; [] if none."""
+def _previous_tasks(days: dict[str, list[str]], today_iso: str) -> list[str]:
+    """The Jira ids from the developer's most recent stand-up before today.
+
+    Whatever they last said they were working on, regardless of where those
+    tickets have got to. This previously reported only the ids Jira considered
+    *done*, which meant a developer who had carried the same unfinished ticket
+    for days showed "no update" — precisely the case where seeing yesterday's
+    ticket matters most.
+
+    Days the developer posted no ticket id are skipped, so this walks back to
+    their last stand-up that named one. Needs no Jira lookup, so it works even
+    when Jira is unreachable.
+    """
     for day in sorted((d for d in days if d < today_iso), reverse=True):
-        done = [k for k in days[day] if look.is_done(k)]
-        if done:
-            return done
+        if days[day]:
+            return days[day]
     return []
 
 
@@ -374,7 +384,7 @@ def gather(cfg: SlackConfig, jira_cfg, today: dt.date) -> list[dict]:
         days = by_dev.get(short, {})
         picked = days.get(tid, [])
         done = [k for k in picked if look.is_done(k)] if jira_cfg else []
-        previous = _previous_done(days, tid, look) if jira_cfg else []
+        previous = _previous_tasks(days, tid)
 
         rows.append({
             "name": short,
