@@ -199,6 +199,9 @@ These modules are the reusable machinery the agents call (not run directly):
 | `otter.py` | Pull meetings from Otter — Public API / unofficial web API / inbox — normalised onto one `Meeting` shape. Renders transcripts back into Otter export format so `transcript.py` handles them unchanged. |
 | `archive.py` | Pure filing rules for the archive: project detection, folder paths, the generated documents, index upsert, Slack notice. No I/O. |
 | `gap.py` | Slack-vs-transcript comparison logic. |
+For the team-facing explanation of the digest and what developers need to do,
+see [STANDUP_GUIDE.md](STANDUP_GUIDE.md).
+
 | `scorecard.py` | The daily performance rubric — pure scoring, sheet rows and Slack text. No I/O, and the reasoning engine is never involved. See [SCORING.md](SCORING.md) and [SCORECARD_API.md](SCORECARD_API.md). |
 | `dashboard.py` | Renders the scorecard fact table into one self-contained HTML page. Pure — parsing and markup only, no Sheets or network. |
 | `verify.py` | Jira-vs-transcript Scrum-Master verification logic. |
