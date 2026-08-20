@@ -367,14 +367,23 @@ def post_slack(cfg: SlackConfig, channel: str, text: str, label: str) -> None:
         print(f"  Slack post failed ({label}): {exc}{hint}")
 
 
-def dm_developers(cfg: SlackConfig, records: list[dict], order_ids: dict[str, str]) -> None:
-    """DM each developer their own breakdown — the only per-person disclosure."""
+def dm_developers(cfg: SlackConfig, records: list[dict],
+                  order_ids: dict[str, str]) -> list[str]:
+    """DM each developer their own breakdown; return those we could not reach.
+
+    A developer with no Slack id is one who never sees their score. That has to
+    surface rather than scroll past in a log — the ids come from the check-in
+    channel's membership, so anyone not in that channel is invisible here.
+    """
+    unreachable: list[str] = []
     for record in records:
         user_id = order_ids.get(record["developer"])
         if not user_id:
+            unreachable.append(record["developer"])
             print(f"  no Slack id for {record['developer']} — DM skipped")
             continue
         post_slack(cfg, user_id, sc.compose_slack_dm(record), f"DM {record['developer']}")
+    return unreachable
 
 
 def slack_user_ids(cfg: SlackConfig, name_map: dict[str, str]) -> dict[str, str]:
@@ -528,7 +537,14 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
         for channel in score_cfg.score_channels(cfg.channel_id):
             post_slack(cfg, channel, text, label)
         if score_cfg.dm_enabled:
-            dm_developers(cfg, records, slack_user_ids(cfg, name_map))
+            unreachable = dm_developers(cfg, records, slack_user_ids(cfg, name_map))
+            if unreachable and score_cfg.ops_channel_id:
+                post_slack(cfg, score_cfg.ops_channel_id,
+                           f"*Scorecard — {day.isoformat()}*\n"
+                           f"No Slack id for: {', '.join(unreachable)}. They did not "
+                           f"receive their score. Invite them to <#{cfg.channel_id}> — "
+                           f"ids are resolved from that channel's membership.",
+                           "unreachable-developer alert")
         elif not score_cfg.public_scores:
             print("  SCORE_DM_ENABLED=false — individual DMs withheld (shadow mode).")
     _report_failures(cfg, records, score_cfg, day, dry_run=dry_run)

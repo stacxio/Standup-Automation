@@ -313,3 +313,45 @@ def test_failure_alerts_keep_their_own_destination():
     cfg = _score_cfg(post_channels=("C-ops",), ops_channel_id="C-alerts")
     assert cfg.score_channels("C-checkin") == ["C-ops"]
     assert cfg.ops_channel_id == "C-alerts"
+
+
+# --- DM delivery ----------------------------------------------------------
+class _Spy:
+    """Captures post_slack calls instead of sending them."""
+
+    def __init__(self):
+        self.sent = []
+
+    def __call__(self, cfg, channel, text, label):
+        self.sent.append((channel, label))
+
+
+def _dm_record(name: str) -> dict:
+    return {"developer": name, "date": "2026-08-19", "status": sc.SCORED,
+            "attendance": "Present", "total": 50.0, "process": 20.0, "delivery": 30.0,
+            "band": "Needs Attention", "points": {}, "tasks_picked": 0, "tasks_done": 0,
+            "tasks_credit": 0, "flags": [], "evidence": {}, "reason": ""}
+
+
+def test_every_developer_with_an_id_is_dmed(monkeypatch):
+    spy = _Spy()
+    monkeypatch.setattr(bs, "post_slack", spy)
+    records = [_dm_record("Raghul"), _dm_record("Soma")]
+    missed = bs.dm_developers(None, records, {"Raghul": "U1", "Soma": "U2"})
+    assert missed == []
+    assert [c for c, _ in spy.sent] == ["U1", "U2"]
+
+
+def test_a_developer_without_a_slack_id_is_reported_not_swallowed(monkeypatch):
+    """Mallesh is not in the check-in channel, so no id resolves for him."""
+    spy = _Spy()
+    monkeypatch.setattr(bs, "post_slack", spy)
+    records = [_dm_record("Raghul"), _dm_record("Mallesh")]
+    missed = bs.dm_developers(None, records, {"Raghul": "U1"})
+    assert missed == ["Mallesh"]
+    assert [c for c, _ in spy.sent] == ["U1"]       # the others still get theirs
+
+
+def test_nobody_reachable_returns_them_all(monkeypatch):
+    monkeypatch.setattr(bs, "post_slack", _Spy())
+    assert bs.dm_developers(None, [_dm_record("A"), _dm_record("B")], {}) == ["A", "B"]
