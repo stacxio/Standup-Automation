@@ -56,3 +56,55 @@ def test_unspaced_lowercase_still_matches():
 def test_order_is_first_appearance():
     text = "moved WS-179, WS-177 and WS-178"
     assert extract_jira_ids(text) == ["WS-179", "WS-177", "WS-178"]
+
+
+# --- ADF flattening: urls must survive ------------------------------------
+# Jira stores a pasted url as a "smart link" carrying no text, and hides a
+# hyperlink's target in a mark. Both were dropped, so "PR: <pasted link>"
+# flattened to "PR:" and no matcher could ever see the url.
+from standup_summarizer import jira as _jira  # noqa: E402
+
+
+def _doc(*content):
+    return {"type": "doc", "version": 1, "content": list(content)}
+
+
+def test_a_pasted_link_survives_flattening():
+    """The real SP-20 comment: 'PR:' followed by an inlineCard."""
+    url = "https://github.com/hirocomco/agb-admin-console/tree/main"
+    body = _doc({"type": "paragraph", "content": [
+        {"type": "text", "text": "PR: "},
+        {"type": "inlineCard", "attrs": {"url": url}},
+    ]})
+    assert url in _jira.adf_to_text(body)
+
+
+@pytest.mark.parametrize("card", ["inlineCard", "blockCard", "embedCard"])
+def test_every_card_type_yields_its_url(card):
+    body = _doc({"type": card, "attrs": {"url": "https://example.com/x"}})
+    assert "https://example.com/x" in _jira.adf_to_text(body)
+
+
+def test_a_hyperlinked_word_yields_both_its_text_and_its_target():
+    body = _doc({"type": "paragraph", "content": [
+        {"type": "text", "text": "see the PR",
+         "marks": [{"type": "link", "attrs": {"href": "https://example.com/pull/9"}}]},
+    ]})
+    flat = _jira.adf_to_text(body)
+    assert "see the PR" in flat and "https://example.com/pull/9" in flat
+
+
+def test_a_card_without_a_url_adds_nothing():
+    body = _doc({"type": "inlineCard", "attrs": {"localId": "abc"}})
+    assert _jira.adf_to_text(body).strip() == ""
+
+
+def test_ordinary_text_is_unchanged():
+    body = _doc({"type": "paragraph", "content": [{"type": "text", "text": "plain words"}]})
+    assert _jira.adf_to_text(body).strip() == "plain words"
+
+
+def test_flattening_still_survives_junk():
+    assert _jira.adf_to_text(None) == ""
+    assert _jira.adf_to_text({"type": "paragraph"}) == ""
+    assert _jira.adf_to_text([{"type": "text", "text": "a"}, None]) == "a"

@@ -42,8 +42,20 @@ def _get(cfg: JiraConfig, url: str) -> dict | None:
         return None
 
 
+# Nodes Jira creates when a url is pasted: the url lives in attrs and the node
+# carries no text at all.
+_CARD_TYPES = {"inlineCard", "blockCard", "embedCard"}
+
+
 def adf_to_text(node) -> str:
-    """Flatten an Atlassian Document Format value (description/comment) to text."""
+    """Flatten an Atlassian Document Format value (description/comment) to text.
+
+    Urls are included. Jira turns a pasted link into a "smart link" — an
+    inlineCard whose url sits in `attrs` with no `text` anywhere — and hides the
+    target of a hyperlinked word in a link *mark*. Reading only `text` dropped
+    both: a comment of "PR: <pasted link>" flattened to "PR:" and the link was
+    invisible to every caller.
+    """
     if node is None:
         return ""
     if isinstance(node, str):
@@ -51,7 +63,15 @@ def adf_to_text(node) -> str:
     if isinstance(node, list):
         return " ".join(t for t in (adf_to_text(n) for n in node) if t)
     if isinstance(node, dict):
-        parts = [node.get("text") or "", adf_to_text(node.get("content"))]
+        parts = [node.get("text") or ""]
+        attrs = node.get("attrs") or {}
+        if node.get("type") in _CARD_TYPES and attrs.get("url"):
+            parts.append(str(attrs["url"]))
+        for mark in node.get("marks") or []:
+            href = (mark.get("attrs") or {}).get("href")
+            if mark.get("type") == "link" and href:
+                parts.append(str(href))
+        parts.append(adf_to_text(node.get("content")))
         return " ".join(p for p in parts if p)
     return ""
 
