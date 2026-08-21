@@ -227,6 +227,8 @@ class ScoreConfig:
     """Channels the daily scorecard posts to. Empty means "just the check-in
     channel" (SLACK_CHANNEL_ID), which is the historical behaviour."""
     dm_enabled: bool = False
+    nudge_enabled: bool = True
+    """DM a developer at capture time when they have named no ticket id yet."""
     public_scores: bool = True
     """Post every developer's score to the check-in channel each day. When
     false, only the team aggregate is posted and individual scores go by DM."""
@@ -279,6 +281,7 @@ class ScoreConfig:
                 c.strip() for c in (_env("SCORE_POST_CHANNELS") or "").split(",") if c.strip()
             ),
             dm_enabled=_env_bool("SCORE_DM_ENABLED", False),
+            nudge_enabled=_env_bool("SCORE_NUDGE_ENABLED", True),
             public_scores=_env_bool("SCORE_PUBLIC_SCORES", True),
             public_order=(_env("SCORE_PUBLIC_ORDER", "roster") or "roster").strip().lower(),
             project_prefixes=frozenset(

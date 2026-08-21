@@ -788,6 +788,25 @@ def compose_slack_roster(records: list[dict], *, order: str = "roster") -> str:
     )
 
 
+def compose_nudge(developer: str, day: dt.date, channel_id: str) -> str:
+    """The DM sent when a developer has named no ticket by the capture hour.
+
+    Sent while the day can still be fixed, which is the whole point — by the
+    evening cutoff the commitment is frozen and nothing can be added. It says
+    what is missing, what it costs, and exactly what to post.
+    """
+    return (
+        f"*Task id not updated* — {day.strftime('%d-%m-%Y')}\n\n"
+        f"You have not named a Jira ticket in <#{channel_id}> today, so there is "
+        f"nothing to link your work to.\n\n"
+        f"Post your stand-up with the ticket id in it — for example `HIR-98` or "
+        f"`WS-256`. Any of these forms are read: `HIR-98`, `HIR 98`, `hir-98`.\n\n"
+        f"Until then today counts as no task picked, which caps the day at "
+        f"10/100 however much work you do. It is picked up automatically once "
+        f"you post — nobody has to be told."
+    )
+
+
 def compose_slack_team(records: list[dict]) -> str:
     """The team aggregate only — used when per-person scores are not published."""
     if not records:

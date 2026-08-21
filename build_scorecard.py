@@ -443,21 +443,44 @@ def project_prefixes(cfg: SlackConfig, score_cfg: ScoreConfig) -> frozenset[str]
     return score_cfg.known_prefixes(cfg.channel_routes, ArchiveConfig.from_env().project_names)
 
 
+def nudge_candidates(order: list[str], captured: list[tuple[str, list[str]]],
+                     day: dt.date, roll_calls, leaves) -> list[str]:
+    """Developers to remind: captured just now, with no ticket id, and expected in.
+
+    Nobody is chased on a day they were never expected to work — a weekend, or
+    an approved leave — and an explicit Absent is an answer, not a silence. An
+    unknown attendance still gets the reminder: at capture time the roll-call is
+    often not posted yet, and a missing ticket id is worth flagging either way.
+    """
+    if day.weekday() >= 5:
+        return []
+    out = []
+    for developer, picked in captured:
+        if picked:
+            continue
+        attendance = att.cell_value(developer, day, roll_calls, leaves)
+        if sc._norm(attendance) in sc.UNSCORABLE_ATTENDANCE or sc._norm(attendance) == "absent":
+            continue
+        out.append(developer)
+    return out
+
+
 def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
                dry_run: bool, force: bool) -> dict[str, list[str]]:
-    """Freeze each developer's committed tasks for `day`."""
-    order, _roll, _leaves, _names, standups = read_channel(cfg)
+    """Freeze each developer's committed tasks for `day`, and chase the gaps."""
+    order, roll_calls, leaves, name_map, standups = read_channel(cfg)
     existing = read_tab(sh, COMMITMENTS_TAB)
     frozen = commitments_for(existing, day)
     prefixes = project_prefixes(cfg, score_cfg)
 
     captured_at = dt.datetime.now().isoformat(timespec="seconds")
-    new_rows = []
+    new_rows, captured = [], []
     for developer in order:
         if developer in frozen and not force:
             continue  # already frozen — a re-run must not move the goalposts
         picked = picked_from_slack(standups, day, developer, prefixes)
         frozen[developer] = picked
+        captured.append((developer, picked))
         new_rows.append([day.isoformat(), developer, ", ".join(picked), captured_at])
 
     print(f"Capture {day.isoformat()}: {len(new_rows)} new, "
@@ -468,6 +491,30 @@ def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     if new_rows and not dry_run:
         write_tab(sh, COMMITMENTS_TAB, COMMITMENT_HEADERS,
                   merge_commitments(existing, new_rows))
+
+    # Chase only what was captured in *this* run, so a second capture the same
+    # day is silent — the same idempotency that stops the snapshot moving.
+    chase = nudge_candidates(order, captured, day, roll_calls, leaves)
+    if chase and score_cfg.nudge_enabled:
+        print(f"No task id yet: {', '.join(chase)}")
+        if dry_run:
+            print("  (dry run — no reminders sent)")
+        else:
+            ids = slack_user_ids(cfg, name_map)
+            unreachable = []
+            for developer in chase:
+                user_id = ids.get(developer)
+                if not user_id:
+                    unreachable.append(developer)
+                    continue
+                post_slack(cfg, user_id,
+                           sc.compose_nudge(developer, day, cfg.channel_id),
+                           f"nudge {developer}")
+            if unreachable and score_cfg.ops_channel_id:
+                post_slack(cfg, score_cfg.ops_channel_id,
+                           f"*Task-id reminder — {day.isoformat()}*\nNo Slack id for: "
+                           f"{', '.join(unreachable)}. They were not reminded.",
+                           "unreachable-developer alert")
     return frozen
 
 

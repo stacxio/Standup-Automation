@@ -355,3 +355,63 @@ def test_a_developer_without_a_slack_id_is_reported_not_swallowed(monkeypatch):
 def test_nobody_reachable_returns_them_all(monkeypatch):
     monkeypatch.setattr(bs, "post_slack", _Spy())
     assert bs.dm_developers(None, [_dm_record("A"), _dm_record("B")], {}) == ["A", "B"]
+
+
+# --- the 11:00 "no task id yet" reminder ----------------------------------
+MONDAY = dt.date(2026, 8, 17)
+SATURDAY = dt.date(2026, 8, 15)
+
+
+def _nudge(captured, day=MONDAY, roll=None, leaves=None):
+    order = [name for name, _ in captured]
+    return bs.nudge_candidates(order, captured, day, roll or {}, leaves or {})
+
+
+def test_a_developer_with_no_ticket_id_is_reminded():
+    assert _nudge([("Raghul", []), ("Sahil", ["WS-1"])]) == ["Raghul"]
+
+
+def test_a_developer_who_named_a_ticket_is_left_alone():
+    assert _nudge([("Sahil", ["WS-1", "WS-2"])]) == []
+
+
+def test_nobody_is_chased_at_the_weekend():
+    assert _nudge([("Raghul", [])], day=SATURDAY) == []
+
+
+def test_approved_leave_is_not_chased():
+    assert _nudge([("Raghul", [])], leaves={MONDAY: {"Raghul"}}) == []
+
+
+def test_an_explicit_absence_is_an_answer_not_a_silence():
+    assert _nudge([("Raghul", [])], roll={MONDAY: {"Raghul": "Absent"}}) == []
+
+
+@pytest.mark.parametrize("status", ["Present", "Half Day"])
+def test_someone_who_is_in_but_has_no_ticket_is_chased(status):
+    assert _nudge([("Raghul", [])], roll={MONDAY: {"Raghul": status}}) == ["Raghul"]
+
+
+def test_an_unknown_attendance_is_still_chased():
+    """At 11:00 the roll-call is often not posted yet; the gap still matters."""
+    assert _nudge([("Raghul", [])], roll={}) == ["Raghul"]
+
+
+def test_only_developers_captured_in_this_run_are_chased():
+    """A second capture the same day must be silent, not a second reminder."""
+    assert _nudge([]) == []
+
+
+def test_the_reminder_says_what_to_post_and_what_it_costs():
+    text = sc.compose_nudge("Raghul", MONDAY, "C0B9FD2KB5L")
+    assert "17-08-2026" in text
+    assert "<#C0B9FD2KB5L>" in text          # a clickable channel, not a raw id
+    assert "HIR-98" in text                  # a concrete example
+    assert "10/100" in text                  # the consequence
+    assert "automatically" in text           # and that posting is enough
+
+
+def test_the_reminder_names_no_one_else():
+    text = sc.compose_nudge("Raghul", MONDAY, "C1")
+    for other in ("Sahil", "Soma", "Gokul", "score", "team average"):
+        assert other not in text
