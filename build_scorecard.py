@@ -51,7 +51,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer import gsheets, jira, scorecard as sc  # noqa: E402
+from standup_summarizer import gsheets, jira, retrying, scorecard as sc  # noqa: E402
 from standup_summarizer.config import (  # noqa: E402
     ArchiveConfig,
     JiraConfig,
@@ -362,7 +362,10 @@ def write_tab(sh, title: str, header: list[str], rows: list[list[str]]) -> None:
 def post_slack(cfg: SlackConfig, channel: str, text: str, label: str) -> None:
     client = build_client(cfg.bot_token)
     try:
-        client.chat_postMessage(channel=channel, text=text)
+        # Retried only for failures that mean it never arrived, so a retry
+        # cannot duplicate a message Slack already delivered.
+        retrying.retry_api(lambda: client.chat_postMessage(channel=channel, text=text),
+                           describe=f"post {label}")
         print(f"  posted {label} -> {channel}")
     except Exception as exc:  # noqa: BLE001
         hint = ""

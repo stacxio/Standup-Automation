@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 from .config import SlackConfig
 from .models import GroupedMessages, Message, PersonStandup
+from .retrying import retry_api
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +39,38 @@ class SlackClient(Protocol):
     def users_info(self, **kwargs: Any) -> Any: ...
 
 
+class _Retrying:
+    """A Slack client whose every API call retries transient failures.
+
+    Wrapping the client rather than each call site means the reads are covered
+    as well as the posts. That distinction is not academic: the digest was lost
+    on 2026-08-21 to a TLS handshake timeout during `conversations_members`,
+    long before it reached the code that posts, so retrying only `chat_post*`
+    would not have saved it.
+
+    Retries are safe here because the failures retried are ones where the call
+    never completed — a message Slack accepted is never sent twice.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            return retry_api(lambda: attr(*args, **kwargs), describe=f"slack {name}")
+
+        return call
+
+
 def build_client(token: str) -> SlackClient:
     """Create a real Slack WebClient (imported lazily so tests need no SDK)."""
     from slack_sdk import WebClient
 
-    return WebClient(token=token)
+    return _Retrying(WebClient(token=token))
 
 
 def fetch_grouped_messages(

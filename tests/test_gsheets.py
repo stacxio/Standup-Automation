@@ -1,4 +1,4 @@
-"""Retrying transient Google Sheets failures (src/standup_summarizer/gsheets.py)."""
+"""Retrying transient Google and Slack failures (src/standup_summarizer/retrying.py)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from standup_summarizer import gsheets  # noqa: E402
+from standup_summarizer import retrying as gsheets  # noqa: E402
 
 
 class _Response:
@@ -130,3 +130,52 @@ def test_each_retry_is_reported_so_a_slow_run_is_explainable():
                           log=messages.append, describe="write 'Scorecard Daily'")
     assert len(messages) == 2
     assert "write 'Scorecard Daily'" in messages[0] and "503" in messages[0]
+
+
+# --- Slack failures ------------------------------------------------------
+class SlackApiError(Exception):
+    """Shaped like slack_sdk.errors.SlackApiError: .response is a mapping."""
+
+    def __init__(self, status):
+        super().__init__(f"server error {status}")
+        self.response = {"status": status, "ok": False}
+
+
+class URLError(Exception):
+    """Shaped like urllib.error.URLError: the cause hides in .reason."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+def test_a_slack_server_error_is_retried(status):
+    assert gsheets.is_transient(SlackApiError(status)) is True
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_a_slack_client_error_is_not_retried(status):
+    """not_in_channel and missing_scope will not fix themselves."""
+    assert gsheets.is_transient(SlackApiError(status)) is False
+
+
+def test_the_tls_timeout_that_lost_the_digest_is_retried():
+    """urllib.error.URLError: <urlopen error _ssl.c:993: handshake timed out>."""
+    assert gsheets.is_transient(URLError(TimeoutError("handshake timed out"))) is True
+
+
+def test_a_dns_failure_inside_urlerror_is_retried():
+    class gaierror(OSError):
+        pass
+
+    assert gsheets.is_transient(URLError(gaierror("getaddrinfo failed"))) is True
+
+
+def test_a_urlerror_with_an_ordinary_reason_is_not_retried():
+    assert gsheets.is_transient(URLError("unknown url type")) is False
+
+
+def test_a_slack_call_recovers_after_a_timeout():
+    call = _Flaky(URLError(TimeoutError("handshake timed out")), fails=2)
+    assert _run(call)[0] == "ok" and call.calls == 3
