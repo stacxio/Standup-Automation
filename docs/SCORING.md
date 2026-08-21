@@ -399,7 +399,7 @@ distinction the scorer makes, preserved in the most public place it appears.
 
 | Time | Job | Action |
 |------|-----|--------|
-| `SCORE_CAPTURE_HOUR` (11:00) | `build_scorecard.py --capture` | Freeze picked tasks for the day |
+| `SCORE_CAPTURE_HOUR` (11:00) | `build_scorecard.py --capture` | Freeze picked tasks for the day; DM anyone who has named none yet (§3.1) |
 | `SCORE_CUTOFF_HOUR` (18:00) | `build_scorecard.py --score` | Score against the frozen set, write tabs, DM |
 | 02:00 | `build_scorecard.py --recompute --days 3` | Self-correcting pass (§7.2) |
 
@@ -447,6 +447,7 @@ SCORE_OPS_CHANNEL_ID=
 SCORE_PUBLIC_SCORES=true      # post every developer's score to the check-in channel
 SCORE_PUBLIC_ORDER=roster     # roster | score
 SCORE_DM_ENABLED=false        # per-person DM with the full evidence breakdown
+SCORE_NUDGE_ENABLED=true      # DM at capture time when no ticket id is named yet
 ```
 
 During the shadow phase (§12) set `SCORE_PUBLIC_SCORES=false` as well — the
