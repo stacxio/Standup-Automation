@@ -11,6 +11,10 @@ Three modes, all non-interactive and safe to re-run:
                 and writes them to the 'Scorecard Commitments' tab. Runs at
                 SCORE_CAPTURE_HOUR (~11:00), before the workday closes, so a
                 commitment cannot be quietly dropped later in the day.
+                A developer who has named nothing yet is DM'd, and their entry
+                stays open rather than being frozen at zero — a ticket posted
+                after the reminder still counts. Once they name one it is frozen
+                like everyone else's.
 
   --score       Score the day against that frozen set using Jira state at the
                 cutoff. Writes 'Scorecard Daily' (append-only) and the month
@@ -474,17 +478,28 @@ def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     prefixes = project_prefixes(cfg, score_cfg)
 
     captured_at = dt.datetime.now().isoformat(timespec="seconds")
-    new_rows, captured = [], []
+    new_rows, first_seen, reopened = [], [], []
     for developer in order:
-        if developer in frozen and not force:
-            continue  # already frozen — a re-run must not move the goalposts
+        seen_before = developer in frozen
+        # A real commitment is frozen and never moves — that is what stops a
+        # task being quietly dropped during the day. An *empty* one has nothing
+        # to drop, so it stays open: someone who posts a ticket id after being
+        # reminded should still have it counted, not be held to a blank.
+        if seen_before and frozen[developer] and not force:
+            continue
         picked = picked_from_slack(standups, day, developer, prefixes)
+        if seen_before:
+            reopened.append(developer)
+        else:
+            first_seen.append((developer, picked))
         frozen[developer] = picked
-        captured.append((developer, picked))
         new_rows.append([day.isoformat(), developer, ", ".join(picked), captured_at])
 
-    print(f"Capture {day.isoformat()}: {len(new_rows)} new, "
-          f"{len(frozen) - len(new_rows)} already frozen")
+    held = len(frozen) - len(new_rows)
+    print(f"Capture {day.isoformat()}: {len(first_seen)} new, {len(reopened)} re-read, "
+          f"{held} already committed")
+    if reopened:
+        print(f"  re-read (had no task id): {', '.join(reopened)}")
     for developer, picked in sorted(frozen.items()):
         print(f"  {developer:<12} {', '.join(picked) if picked else '—'}")
 
@@ -492,9 +507,9 @@ def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
         write_tab(sh, COMMITMENTS_TAB, COMMITMENT_HEADERS,
                   merge_commitments(existing, new_rows))
 
-    # Chase only what was captured in *this* run, so a second capture the same
-    # day is silent — the same idempotency that stops the snapshot moving.
-    chase = nudge_candidates(order, captured, day, roll_calls, leaves)
+    # Chase only developers seen for the first time today. Re-reading an empty
+    # commitment must not send the same reminder again every run.
+    chase = nudge_candidates(order, first_seen, day, roll_calls, leaves)
     if chase and score_cfg.nudge_enabled:
         print(f"No task id yet: {', '.join(chase)}")
         if dry_run:

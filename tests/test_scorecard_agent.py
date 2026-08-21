@@ -415,3 +415,78 @@ def test_the_reminder_names_no_one_else():
     text = sc.compose_nudge("Raghul", MONDAY, "C1")
     for other in ("Sahil", "Soma", "Gokul", "score", "team average"):
         assert other not in text
+
+
+# --- an empty commitment stays open ---------------------------------------
+class _FakeSheet:
+    """Just enough of the sheet for do_capture: one commitments tab in memory."""
+
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+        self.writes = 0
+
+
+def _capture(monkeypatch, standup_ids, existing_rows, *, force=False, day=None):
+    """Run do_capture with Slack/Sheets replaced; return (frozen, dm'd, written)."""
+    from standup_summarizer.config import ScoreConfig, SlackConfig
+    day = day or dt.date(2026, 8, 17)          # a Monday
+    order = list(standup_ids)
+    sheet = _FakeSheet(existing_rows)
+    sent = []
+
+    monkeypatch.setattr(bs, "read_channel", lambda cfg: (
+        order, {day: {d: "Present" for d in order}}, {}, {}, {}))
+    monkeypatch.setattr(bs, "read_tab", lambda sh, tab: sh.rows)
+    monkeypatch.setattr(bs, "write_tab", lambda sh, tab, hdr, rows: (
+        setattr(sh, "rows", rows), setattr(sh, "writes", sh.writes + 1)))
+    monkeypatch.setattr(bs, "picked_from_slack",
+                        lambda st, d, dev, pf: list(standup_ids[dev]))
+    monkeypatch.setattr(bs, "project_prefixes", lambda cfg, sc_: frozenset({"HIR", "WS"}))
+    monkeypatch.setattr(bs, "slack_user_ids", lambda cfg, nm: {d: f"U-{d}" for d in order})
+    monkeypatch.setattr(bs, "post_slack",
+                        lambda cfg, ch, text, label: sent.append(label))
+
+    cfg = SlackConfig(bot_token="x", channel_id="C-checkin")
+    score_cfg = ScoreConfig(weights=sc.Weights(), thresholds=sc.Thresholds())
+    frozen = bs.do_capture(day, cfg, score_cfg, sheet, dry_run=False, force=force)
+    return frozen, [s for s in sent if s.startswith("nudge")], sheet
+
+
+def test_a_real_commitment_is_never_moved(monkeypatch):
+    """Someone who named a ticket at 11:00 keeps that exact list."""
+    existing = [["2026-08-17", "Raghul", "HIR-1", "2026-08-17T11:00:00"]]
+    frozen, _, _ = _capture(monkeypatch, {"Raghul": ["HIR-1", "HIR-2"]}, existing)
+    assert frozen["Raghul"] == ["HIR-1"]       # HIR-2 added later is NOT picked up
+
+
+def test_an_empty_commitment_is_re_read(monkeypatch):
+    """The change: a blank entry stays open, so a later post still counts."""
+    existing = [["2026-08-17", "Soma", "", "2026-08-17T11:00:00"]]
+    frozen, _, _ = _capture(monkeypatch, {"Soma": ["WS-9"]}, existing)
+    assert frozen["Soma"] == ["WS-9"]
+
+
+def test_re_reading_an_empty_entry_does_not_nudge_again(monkeypatch):
+    """They were reminded at 11:00; a later run must not repeat it."""
+    existing = [["2026-08-17", "Soma", "", "2026-08-17T11:00:00"]]
+    _, nudges, _ = _capture(monkeypatch, {"Soma": []}, existing)
+    assert nudges == []
+
+
+def test_a_first_sighting_with_no_ticket_is_nudged_once(monkeypatch):
+    _, nudges, _ = _capture(monkeypatch, {"Soma": []}, [])
+    assert nudges == ["nudge Soma"]
+
+
+def test_force_re_reads_even_a_real_commitment(monkeypatch):
+    existing = [["2026-08-17", "Raghul", "HIR-1", "2026-08-17T11:00:00"]]
+    frozen, _, _ = _capture(monkeypatch, {"Raghul": ["HIR-9"]}, existing, force=True)
+    assert frozen["Raghul"] == ["HIR-9"]
+
+
+def test_a_developer_who_still_has_nothing_stays_open(monkeypatch):
+    existing = [["2026-08-17", "Soma", "", "2026-08-17T11:00:00"]]
+    frozen, _, sheet = _capture(monkeypatch, {"Soma": []}, existing)
+    assert frozen["Soma"] == []
+    assert sheet.writes == 1                   # the row is refreshed, not duplicated
+    assert len(sheet.rows) == 1

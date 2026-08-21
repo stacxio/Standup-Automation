@@ -60,12 +60,38 @@ people from taking it.
 **Scoring date** — the calendar date being scored, in `TIMEZONE`.
 
 **Picked tasks** — the set of Jira issue keys extracted from the developer's
-stand-up message on the scoring date. This set is **frozen at the capture time**
-(`SCORE_CAPTURE_HOUR`, default 11:00) and is not recomputed later, so tasks
-cannot be silently dropped from a commitment during the day.
+stand-up message on the scoring date, taken at the capture time
+(`SCORE_CAPTURE_HOUR`, default 11:00).
+
+A set with tickets in it is **frozen**: it is not recomputed later, so a task
+cannot be silently dropped from a commitment during the day, and one added at
+17:00 is not counted either.
+
+An **empty** set stays open. There is no commitment to drop, and the developer is
+DM'd at capture time (§3.1) telling them to post a ticket id — holding them to a
+blank while asking them to fix it would contradict the reminder. Each later
+capture re-reads only the empty entries; the moment one names a ticket it freezes
+like the rest.
 
 Keys are extracted with the same tolerant parser `build_report.py` uses, which
 accepts hand-typed forms (`HIR - 72`, `BHA- 79`, `SP12`).
+
+### 3.1 The capture-time reminder
+
+A developer with no ticket id at capture time is DM'd while the day can still be
+fixed — by the cutoff the set is read for scoring and nothing more can be added.
+
+Nobody is chased at the weekend, on approved leave, or when the roll-call records
+them **Absent**, which is an answer rather than a silence. An *unknown* attendance
+is still chased: at 11:00 the roll-call is often not posted yet, and the missing
+ticket id matters either way.
+
+The reminder is sent once per developer per day — only those seen for the first
+time that day — so re-reading an empty entry never repeats it. A developer with
+no resolvable Slack id is reported to `SCORE_OPS_CHANNEL_ID` instead of the
+reminder disappearing.
+
+Set `SCORE_NUDGE_ENABLED=false` to turn it off.
 
 **Cutoff** — `SCORE_CUTOFF_HOUR`, default 18:00. All per-task checks are
 evaluated against Jira state at the cutoff.
