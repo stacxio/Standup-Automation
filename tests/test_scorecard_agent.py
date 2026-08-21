@@ -490,3 +490,41 @@ def test_a_developer_who_still_has_nothing_stays_open(monkeypatch):
     assert frozen["Soma"] == []
     assert sheet.writes == 1                   # the row is refreshed, not duplicated
     assert len(sheet.rows) == 1
+
+
+# --- scoring re-reads an empty commitment ---------------------------------
+def test_capture_can_be_asked_not_to_nudge(monkeypatch):
+    """Scoring re-captures, but the cutoff is too late to act on a reminder."""
+    from standup_summarizer.config import ScoreConfig, SlackConfig
+    day = dt.date(2026, 8, 17)
+    sheet = _FakeSheet([])
+    sent = []
+    monkeypatch.setattr(bs, "read_channel", lambda cfg: (
+        ["Soma"], {day: {"Soma": "Present"}}, {}, {}, {}))
+    monkeypatch.setattr(bs, "read_tab", lambda sh, tab: sh.rows)
+    monkeypatch.setattr(bs, "write_tab", lambda sh, tab, hdr, rows: setattr(sh, "rows", rows))
+    monkeypatch.setattr(bs, "picked_from_slack", lambda st, d, dev, pf: [])
+    monkeypatch.setattr(bs, "project_prefixes", lambda cfg, sc_: frozenset({"SP"}))
+    monkeypatch.setattr(bs, "slack_user_ids", lambda cfg, nm: {"Soma": "U1"})
+    monkeypatch.setattr(bs, "post_slack", lambda cfg, ch, t, label: sent.append(label))
+
+    cfg = SlackConfig(bot_token="x", channel_id="C")
+    score_cfg = ScoreConfig(weights=sc.Weights(), thresholds=sc.Thresholds())
+    bs.do_capture(day, cfg, score_cfg, sheet, dry_run=False, force=False, nudge=False)
+    assert sent == []                       # first sighting, but no reminder
+
+
+def test_a_ticket_posted_after_the_reminder_is_picked_up_at_scoring(monkeypatch):
+    """The gap this closes: Soma posted SP-21 after the 11:00 capture and was
+    scored 10/100 on the blank the reminder had told her to fix."""
+    existing = [["2026-08-17", "Soma", "", "2026-08-17T11:00:00"]]
+    frozen, nudges, _ = _capture(monkeypatch, {"Soma": ["SP-21"]}, existing)
+    assert frozen["Soma"] == ["SP-21"]
+    assert nudges == []                     # already reminded at 11:00
+
+
+def test_a_held_commitment_is_still_not_re_read_at_scoring(monkeypatch):
+    """Re-reading empties must not become 'recompute everyone at the cutoff'."""
+    existing = [["2026-08-17", "Raghul", "HIR-1", "2026-08-17T11:00:00"]]
+    frozen, _, _ = _capture(monkeypatch, {"Raghul": ["HIR-1", "HIR-9"]}, existing)
+    assert frozen["Raghul"] == ["HIR-1"]

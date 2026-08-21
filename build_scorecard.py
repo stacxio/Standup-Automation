@@ -473,7 +473,7 @@ def nudge_candidates(order: list[str], captured: list[tuple[str, list[str]]],
 
 
 def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
-               dry_run: bool, force: bool) -> dict[str, list[str]]:
+               dry_run: bool, force: bool, nudge: bool = True) -> dict[str, list[str]]:
     """Freeze each developer's committed tasks for `day`, and chase the gaps."""
     order, roll_calls, leaves, name_map, standups = read_channel(cfg)
     existing = read_tab(sh, COMMITMENTS_TAB)
@@ -512,7 +512,7 @@ def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
 
     # Chase only developers seen for the first time today. Re-reading an empty
     # commitment must not send the same reminder again every run.
-    chase = nudge_candidates(order, first_seen, day, roll_calls, leaves)
+    chase = nudge_candidates(order, first_seen, day, roll_calls, leaves) if nudge else []
     if chase and score_cfg.nudge_enabled:
         print(f"No task id yet: {', '.join(chase)}")
         if dry_run:
@@ -544,13 +544,15 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     if not jira_cfg:
         print("Jira not configured — days with committed tasks will be Not Scored.")
 
-    # Prefer the frozen commitment; capture one now if the 11:00 run was missed,
-    # so there is always an audit trail of what the day was scored against.
-    commitments = read_tab(sh, COMMITMENTS_TAB)
-    frozen = commitments_for(commitments, day)
-    if not frozen:
-        print(f"No commitment snapshot for {day.isoformat()} — capturing now.")
-        frozen = do_capture(day, cfg, score_cfg, sh, dry_run=dry_run, force=False)
+    # Capture before scoring, always. A commitment with tickets in it is held
+    # exactly as it was; an empty one is re-read, so a developer who posted a
+    # ticket id after the 11:00 reminder is scored on it rather than on the
+    # blank they were reminded about. Without this the reminder asked them to
+    # act while the scoring ignored whether they did.
+    #
+    # No reminders are sent from here: by the cutoff it is too late to act on
+    # one, and a backfill would be chasing people about a day long gone.
+    frozen = do_capture(day, cfg, score_cfg, sh, dry_run=dry_run, force=False, nudge=False)
 
     history = read_tab(sh, DAILY_TAB)
     facts = JiraFacts(jira_cfg, name_map)
