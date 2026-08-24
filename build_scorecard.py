@@ -512,27 +512,24 @@ def do_capture(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
 
     # Chase only developers seen for the first time today. Re-reading an empty
     # commitment must not send the same reminder again every run.
-    chase = nudge_candidates(order, first_seen, day, roll_calls, leaves) if nudge else []
+    # "today" is literal in the reminder, so a backfill must not post one about
+    # a day long gone.
+    chase = (nudge_candidates(order, first_seen, day, roll_calls, leaves)
+             if nudge and day == dt.date.today() else [])
     if chase and score_cfg.nudge_enabled:
         print(f"No task id yet: {', '.join(chase)}")
         if dry_run:
             print("  (dry run — no reminders sent)")
         else:
             ids = slack_user_ids(cfg, name_map)
-            unreachable = []
             for developer in chase:
                 user_id = ids.get(developer)
-                if not user_id:
-                    unreachable.append(developer)
-                    continue
-                post_slack(cfg, user_id,
-                           sc.compose_nudge(developer, day, cfg.channel_id),
+                # A mention notifies; the bare name still names them, so an
+                # unresolvable id costs the ping but not the reminder.
+                mention = f"<@{user_id}>" if user_id else f"*{developer}*"
+                post_slack(cfg, cfg.channel_id,
+                           sc.compose_nudge(mention, cfg.channel_id),
                            f"nudge {developer}")
-            if unreachable and score_cfg.ops_channel_id:
-                post_slack(cfg, score_cfg.ops_channel_id,
-                           f"*Task-id reminder — {day.isoformat()}*\nNo Slack id for: "
-                           f"{', '.join(unreachable)}. They were not reminded.",
-                           "unreachable-developer alert")
     return frozen
 
 

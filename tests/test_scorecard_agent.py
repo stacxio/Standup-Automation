@@ -403,17 +403,21 @@ def test_only_developers_captured_in_this_run_are_chased():
 
 
 def test_the_reminder_says_what_to_post_and_what_it_costs():
-    text = sc.compose_nudge("Raghul", MONDAY, "C0B9FD2KB5L")
-    assert "17-08-2026" in text
+    text = sc.compose_nudge("<@U123>", "C0B9FD2KB5L")
     assert "<#C0B9FD2KB5L>" in text          # a clickable channel, not a raw id
     assert "HIR-98" in text                  # a concrete example
     assert "10/100" in text                  # the consequence
     assert "automatically" in text           # and that posting is enough
 
 
+def test_the_reminder_opens_with_the_mention_so_the_person_is_notified():
+    """A mention pings; a plain name in a channel does not."""
+    assert sc.compose_nudge("<@U123>", "C1").startswith("<@U123> ")
+
+
 def test_the_reminder_names_no_one_else():
-    text = sc.compose_nudge("Raghul", MONDAY, "C1")
-    for other in ("Sahil", "Soma", "Gokul", "score", "team average"):
+    text = sc.compose_nudge("<@U123>", "C1")
+    for other in ("Sahil", "Soma", "Gokul", "team average"):
         assert other not in text
 
 
@@ -473,8 +477,16 @@ def test_re_reading_an_empty_entry_does_not_nudge_again(monkeypatch):
     assert nudges == []
 
 
+def _a_weekday() -> dt.date:
+    """Today if it is a weekday, else the Friday before — reminders are for today."""
+    day = dt.date.today()
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    return day
+
+
 def test_a_first_sighting_with_no_ticket_is_nudged_once(monkeypatch):
-    _, nudges, _ = _capture(monkeypatch, {"Soma": []}, [])
+    _, nudges, _ = _capture(monkeypatch, {"Soma": []}, [], day=_a_weekday())
     assert nudges == ["nudge Soma"]
 
 
@@ -528,3 +540,57 @@ def test_a_held_commitment_is_still_not_re_read_at_scoring(monkeypatch):
     existing = [["2026-08-17", "Raghul", "HIR-1", "2026-08-17T11:00:00"]]
     frozen, _, _ = _capture(monkeypatch, {"Raghul": ["HIR-1", "HIR-9"]}, existing)
     assert frozen["Raghul"] == ["HIR-1"]
+
+
+# --- the reminder is a channel post, not a DM ------------------------------
+def _capture_targets(monkeypatch, standup_ids, existing_rows, ids=None, day=None):
+    """Run do_capture and return [(channel, label)] of everything posted."""
+    from standup_summarizer.config import ScoreConfig, SlackConfig
+    day = day or dt.date.today()
+    order = list(standup_ids)
+    sheet = _FakeSheet(existing_rows)
+    posts = []
+    monkeypatch.setattr(bs, "read_channel", lambda cfg: (
+        order, {day: {d: "Present" for d in order}}, {}, {}, {}))
+    monkeypatch.setattr(bs, "read_tab", lambda sh, tab: sh.rows)
+    monkeypatch.setattr(bs, "write_tab", lambda sh, tab, hdr, rows: setattr(sh, "rows", rows))
+    monkeypatch.setattr(bs, "picked_from_slack", lambda st, d, dev, pf: list(standup_ids[dev]))
+    monkeypatch.setattr(bs, "project_prefixes", lambda cfg, sc_: frozenset({"HIR", "WS"}))
+    monkeypatch.setattr(bs, "slack_user_ids", lambda cfg, nm:
+                        ids if ids is not None else {d: f"U-{d}" for d in order})
+    monkeypatch.setattr(bs, "post_slack",
+                        lambda cfg, ch, text, label: posts.append((ch, label, text)))
+    cfg = SlackConfig(bot_token="x", channel_id="C-checkin")
+    score_cfg = ScoreConfig(weights=sc.Weights(), thresholds=sc.Thresholds())
+    bs.do_capture(day, cfg, score_cfg, sheet, dry_run=False, force=False)
+    return posts
+
+
+def test_the_reminder_goes_to_the_check_in_channel_not_a_dm(monkeypatch):
+    posts = _capture_targets(monkeypatch, {"Soma": []}, [])
+    assert [(ch, label) for ch, label, _ in posts] == [("C-checkin", "nudge Soma")]
+
+
+def test_the_person_is_tagged_so_they_are_notified(monkeypatch):
+    posts = _capture_targets(monkeypatch, {"Soma": []}, [])
+    assert posts[0][2].startswith("<@U-Soma> ")
+
+
+def test_one_message_per_developer_who_is_missing_a_ticket(monkeypatch):
+    posts = _capture_targets(monkeypatch, {"Soma": [], "Madhan": [], "GN": ["HIR-1"]}, [])
+    assert sorted(label for _c, label, _t in posts) == ["nudge Madhan", "nudge Soma"]
+
+
+def test_an_unresolvable_id_still_gets_a_reminder_without_the_ping(monkeypatch):
+    posts = _capture_targets(monkeypatch, {"Soma": []}, [], ids={})
+    assert len(posts) == 1
+    assert posts[0][2].startswith("*Soma* ")     # named, just not pinged
+
+
+def test_a_backfill_posts_no_reminder(monkeypatch):
+    """'today' is literal in the text; a past day must not be chased."""
+    old_day = dt.date.today() - dt.timedelta(days=3)
+    while old_day.weekday() >= 5:
+        old_day -= dt.timedelta(days=1)
+    posts = _capture_targets(monkeypatch, {"Soma": []}, [], day=old_day)
+    assert posts == []
