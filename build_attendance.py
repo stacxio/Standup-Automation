@@ -5,8 +5,13 @@ Source: the check-in Slack channel (SLACK_CHANNEL_ID).
         GN-Present(Full Day)
         Soma-Absent
         Raghul-Half Day
-  * Leave comes from any message containing the word "leave" + a date
-    (DD-MM-YYYY), e.g. "26-06-2026 is on Leave" -> that person is on Leave that day.
+  * Leave comes from a message that *declares* an absence — "on leave",
+    "applying for leave", "sick leave" — plus a date (DD-MM-YYYY), e.g.
+    "26-06-2026 is on Leave" -> that person is on Leave that day. The bare word
+    is not enough: a check-in about the team's "Leave Management System" project
+    mentions leave constantly and is not a notice. Whoever the message names is
+    the one on leave, else its author. A roll-call Present/Half Day for the same
+    day outranks it (see `cell_value`).
 
 Output: a Google Sheet (ATTENDANCE_SPREADSHEET_ID) with:
   * one tab per month (e.g. "June"), a matrix of Name (rows) x calendar day
@@ -111,6 +116,45 @@ def _rollcall_entry(line: str) -> tuple[str, str] | None:
     return (name, att) if att else None
 
 
+# A leave notice *declares* an absence ("on leave", "applying for leave",
+# "sick leave") — the bare word is not enough. The team has a project literally
+# named "Leave Management System", and its check-ins say "leave" a dozen times;
+# read as notices they marked working developers absent. Project phrasing is
+# stripped before the declaration is looked for, so a task called "Leave
+# Management module" cannot pass as one.
+_LEAVE_PROJECT = re.compile(
+    r"\bleaves?\s+(?:management|system|module|workflow|tracker|policy|balance|"
+    r"portal|feature|page|screen|api|dashboard|report)\b"
+)
+_LEAVE_KIND = (r"(?:half[-\s]?day\s+|full[-\s]?day\s+|sick\s+|casual\s+|medical\s+|"
+               r"emergency\s+|annual\s+|personal\s+|unpaid\s+|paid\s+)?")
+_LEAVE_DECLARATION = re.compile(
+    rf"\b(?:on|taking|take|took|availing|avail)\s+(?:a\s+|an\s+|the\s+)?{_LEAVE_KIND}leaves?\b"
+    rf"|\b(?:apply|applying|applied|request|requesting|requested)\s+(?:for\s+)?"
+    rf"(?:a\s+|an\s+)?{_LEAVE_KIND}leaves?\b"
+    rf"|\b(?:sick|casual|medical|emergency|annual|personal|unpaid|paid)\s+leaves?\b"
+    rf"|\b(?:half|full)[-\s]?day\s+leaves?\b"
+    rf"|\bleaves?\s+(?:request|application)\b"
+    rf"|\bleaves?\s+(?:today|tomorrow)\b"
+)
+
+
+def _is_leave_notice(text: str) -> bool:
+    """True when `text` declares an absence rather than merely mentioning leave."""
+    return bool(_LEAVE_DECLARATION.search(_LEAVE_PROJECT.sub(" ", text.lower())))
+
+
+def _name_pattern(full: str) -> re.Pattern:
+    """Match `full` as whole words, tolerating spacing: "G N" -> "GN", "G. N.".
+
+    A plain substring test is what let a leave notice land on the wrong person:
+    "G N" strips to "gn", which occurs inside "desi(gn)", so any check-in
+    mentioning a design task named GN as the one on leave.
+    """
+    parts = r"[\s.]*".join(re.escape(p) for p in full.lower().split())
+    return re.compile(rf"\b{parts}\b", re.IGNORECASE)
+
+
 def _parse_date(text: str) -> dt.date | None:
     """Parse the first date found, day-first: DD-MM-YYYY or DD-MMM-YYYY."""
     m = _DATE_ABBR.search(text)
@@ -206,12 +250,12 @@ def fetch_channel(cfg: SlackConfig):
                     order.append(short)
             continue
         low = text.lower()
-        if re.search(r"\bleave\b", low) and _parse_date(text):
-            who = author
-            for full in full_names:  # is a specific person named?
-                if full.lower() in low or full.lower().replace(" ", "") in low.replace(" ", ""):
-                    who = full
-                    break
+        if _is_leave_notice(text) and _parse_date(text):
+            # Whose leave? The author, unless the message names someone else.
+            # Longest match wins so "Madhan Kumar P" beats a bare "Madhan", and
+            # the match is whole-word so "design" no longer names "G N".
+            named = [f for f in full_names if _name_pattern(f).search(low)]
+            who = max(named, key=len) if named else author
             for d in {_parse_date(line) for line in [text] + text.splitlines() if _parse_date(line)}:
                 if d:
                     leaves[d].add(canon(who))
@@ -231,11 +275,59 @@ def _fetch_raw(fetcher: _SlackFetcher, channel: str) -> list[dict]:
 # Build month matrices
 # --------------------------------------------------------------------------
 def cell_value(short: str, day: dt.date, roll_calls, leaves) -> str:
+    """The attendance cell for one person-day.
+
+    A roll-call Present/Half Day is a statement about that day itself and wins
+    over a leave, which is only ever *inferred* from prose (`_is_leave_notice`)
+    and can be misattributed. Leave still refines an Absent — an approved
+    absence is not the same fact as an unexplained one — and still fills a
+    blank, which is what a leave posted without any roll-call looks like.
+    """
     if day.weekday() >= 5:                       # Sat=5, Sun=6
         return "Weekend"
+    marked = roll_calls.get(day, {}).get(short, "")
+    if marked in ("Present", "Half Day"):
+        return marked
     if short in leaves.get(day, set()):
         return "Leave"
-    return roll_calls.get(day, {}).get(short, "")
+    return marked
+
+
+def unrostered_checkins(order, status_dates) -> dict[str, list[dt.date]]:
+    """Who posts a stand-up but never appears in a roll-call: {short: [dates]}.
+
+    The roster comes from roll-call lines alone, so someone the roll-call omits
+    is invisible to every agent — no attendance row, no score, no digest entry —
+    and nothing said so. Kavin checked in on 24 and 25 Aug 2026 naming BHA-130
+    and was scored by nothing. The fix is to add them to the roll-call message;
+    this only makes the gap loud enough to notice.
+    """
+    roster = set(order)
+    missing: dict[str, list[dt.date]] = defaultdict(list)
+    for day, names in status_dates.items():
+        for short in names:
+            if short not in roster:
+                missing[short].append(day)
+    return {k: sorted(v) for k, v in sorted(missing.items(), key=lambda kv: -len(kv[1]))}
+
+
+def warn_unrostered(order, status_dates) -> list[str]:
+    """Print the roster gap and return the lines printed (empty when there is none)."""
+    missing = unrostered_checkins(order, status_dates)
+    if not missing:
+        return []
+    n = len(missing)
+    lines = [f"WARNING: {n} developer{'' if n == 1 else 's'} posted a check-in but "
+             f"{'is' if n == 1 else 'are'} not on any roll-call, so "
+             f"{'is' if n == 1 else 'are'} scored by nothing:"]
+    for short, days in missing.items():
+        shown = ", ".join(d.isoformat() for d in days[-3:])
+        more = f" (+{len(days) - 3} earlier)" if len(days) > 3 else ""
+        lines.append(f"  {short}  ({len(days)} day{'' if len(days) == 1 else 's'}: {shown}{more})")
+    lines.append("  Add them to the roll-call message to include them.")
+    for line in lines:
+        print(line)
+    return lines
 
 
 def build_month(order, roll_calls, status_dates, leaves, year, month):
@@ -472,6 +564,7 @@ def main() -> None:
     order, roll_calls, status_dates, leaves = fetch_channel(cfg)
     if not order:
         sys.exit("No roll-call posts found — nothing to build.")
+    warn_unrostered(order, status_dates)
 
     # Months with data (from roll-calls or leaves), plus the upcoming month so
     # its empty tab is always pre-created.
