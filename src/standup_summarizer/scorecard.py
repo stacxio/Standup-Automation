@@ -132,6 +132,12 @@ class TaskFacts:
     comment deliberately does not satisfy this check: a bare hex pattern can be
     typed, a linked commit cannot."""
     comments: tuple[CommentFacts, ...] = ()
+    assignee: str = ""
+    """Jira's assignee display name, empty when the issue is unassigned. Kept
+    for the reason string — the judgement is `assigned_to_developer`."""
+    assigned_to_developer: bool = False
+    """The assignee resolves to the developer being scored, by the same loose
+    name matching used for comment authors. False when unassigned."""
     url: str = ""
 
 
@@ -201,6 +207,13 @@ class Thresholds:
     media_counts_as_comment: bool = True
     """Count a screenshot-only comment as a ticket update. It has no text, but
     posting evidence of progress is the behaviour the check exists to reward."""
+
+    require_assignee_for_comment: bool = True
+    """§4.5 — the comment's 10 points need the issue to be assigned to the
+    developer, not merely commented on by them. Commenting on a colleague's
+    ticket is collaboration, but it is not evidence of your own work, and
+    without this a developer could name any active ticket and comment on it.
+    An unassigned issue fails too: the rule is 'assigned to you'."""
 
     commit_in_comment_counts: bool = True
     """Accept a commit id written in a comment for the commit check, not only a
@@ -330,13 +343,24 @@ def commit_check(task: TaskFacts, thresholds: Thresholds) -> dict:
 
 
 def comment_check(task: TaskFacts, day: dt.date, thresholds: Thresholds) -> dict:
-    """§4.5 — theirs, today, substantial, and not a repeat.
+    """§4.5 — assigned to them, theirs, today, substantial, and not a repeat.
+
+    The assignee gate comes first: points here are meant to show a developer
+    moving their own ticket forward, and a comment on somebody else's is not
+    that. It costs only these 10 points — the task still earns description,
+    commit and delivery credit normally.
 
     A screenshot with no text counts: it carries no characters but it is a real
     update of the ticket. Everything else still applies, because without it
     pasting "working on it" into every picked ticket each morning would be a
     guaranteed 10 points a day.
     """
+    if thresholds.require_assignee_for_comment and not task.assigned_to_developer:
+        return {"passed": False,
+                "reason": ("not assigned to them" if task.assignee
+                           else "unassigned in Jira"),
+                "assignee": task.assignee}
+
     theirs = [c for c in task.comments if c.authored_by_developer]
     today = [c for c in theirs if c.created == day]
     if not today:
@@ -714,10 +738,30 @@ def compose_slack_dm(record: dict) -> str:
             credit = done.get("credit", 0)
             head = f"<{task['url']}|{task['key']}>" if task.get("url") else task["key"]
             lines.append(f"  • {head} — {task.get('status', '')} · delivery {credit}"
-                         f"{' · ' + ', '.join(passed) if passed else ' · nothing else recorded'}")
+                         f"{' · ' + ', '.join(passed) if passed else ' · nothing else recorded'}"
+                         f"{_assignee_note(task)}")
     if record.get("flags"):
         lines += ["", f"_Flags: {', '.join(record['flags'])}_"]
     return "\n".join(lines).rstrip()
+
+
+def _assignee_note(task: dict) -> str:
+    """Why the comment points were 0, when it was the §4.5 assignee gate.
+
+    Every other failure is legible from the ticket itself — too short, a repeat,
+    nothing posted. "Assigned to someone else" is not: the developer did comment
+    and would otherwise be left guessing why it paid nothing.
+    """
+    evidence = task.get("comment") or {}
+    if evidence.get("passed"):
+        return ""
+    reason = evidence.get("reason", "")
+    if reason == "not assigned to them":
+        who = evidence.get("assignee") or "someone else"
+        return f" · comment not counted: assigned to {who}"
+    if reason == "unassigned in Jira":
+        return " · comment not counted: unassigned in Jira"
+    return ""
 
 
 PUBLIC_ORDERS = ("roster", "score")

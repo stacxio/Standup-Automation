@@ -263,6 +263,7 @@ class ScoreConfig:
             min_median_tasks=_env_float("SCORE_MIN_MEDIAN_TASKS", 2.0),
             parent_description_fallback=_env_bool("SCORE_PARENT_DESCRIPTION", True),
             media_counts_as_comment=_env_bool("SCORE_MEDIA_IS_COMMENT", True),
+            require_assignee_for_comment=_env_bool("SCORE_REQUIRE_ASSIGNEE", True),
             commit_in_comment_counts=_env_bool("SCORE_COMMIT_IN_COMMENT", True),
             credit_done=_env_float("SCORE_CREDIT_DONE", 1.0),
             credit_review_with_commit=_env_float("SCORE_CREDIT_REVIEW_COMMIT", 1.0),

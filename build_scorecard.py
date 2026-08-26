@@ -199,6 +199,10 @@ class JiraFacts:
                 authored_by_developer=(author == developer),
                 media=tuple(comment.get("media") or ()),
             ))
+        # Jira's display name ("Malleshwaran M", "Gokul N", "sahil") is folded
+        # onto the roster short the same way comment authors are, so the two
+        # judgements cannot disagree about who somebody is.
+        assignee = detail.get("assignee", "") or ""
         return sc.TaskFacts(
             key=detail.get("key", key),
             description=detail.get("description", ""),
@@ -208,6 +212,8 @@ class JiraFacts:
             issue_type=detail.get("issue_type", ""),
             has_linked_commit=raw["has_linked_commit"],
             comments=tuple(comments),
+            assignee=assignee,
+            assigned_to_developer=bool(assignee) and att._short_of(assignee, self.name_map) == developer,
             url=f"{self.cfg.base_url}/browse/{detail.get('key', key)}" if self.cfg else "",
         )
 

@@ -23,7 +23,7 @@ Two properties this spec is built to guarantee:
 | 2 | Task ID mentioned (task picked) | **5** | per day |
 | 3 | Jira description present on the task | **10** | per task |
 | 4 | Commit ID linked to the task | **5** | per task |
-| 5 | Jira comment on the task by the developer | **10** | per task |
+| 5 | Jira comment on the task by the developer, on a task assigned to them | **10** | per task |
 | 6 | Task Done — or In Review with a commit ID in a comment | **60** | per task |
 | | **Total** | **100** | |
 
@@ -176,7 +176,8 @@ A commit reference in text means one of:
 
 ### 4.5 Jira comment — 10 points, per task
 
-A comment on the issue that is **authored by the developer** and **created on the
+The issue is **assigned to the developer** (`SCORE_REQUIRE_ASSIGNEE`, default
+on), and carries a comment **authored by the developer** and **created on the
 scoring date**, and then either:
 
 | Kind | Condition |
@@ -188,6 +189,19 @@ scoring date**, and then either:
 
 The author, date and duplicate conditions are what stop `"working on it"` pasted
 into every picked ticket each morning from being a guaranteed 10 points a day.
+
+**Why the assignee gate:** these 10 points are evidence of a developer moving
+their *own* ticket forward. A comment on a colleague's issue is collaboration —
+worth doing, but it is not that, and without the gate anyone could name an
+active ticket they do not own and comment their way to the points. An
+**unassigned** issue fails the gate too: the rule is "assigned to you", and
+nobody is. The assignee's Jira display name is folded onto the roster short by
+the same loose matching used for comment authors, so "Malleshwaran M", "Gokul N"
+and a lowercase "sahil" all resolve.
+
+The gate costs **only these 10 points**. The task still earns description,
+commit and its full 60 delivery credit — working someone else's ticket is not
+treated as having done nothing.
 
 **Why media counts:** a screenshot-only comment is an ADF `media` node and
 flattens to zero characters, so it read as "said nothing". Posting evidence of
@@ -436,6 +450,7 @@ SCORE_PROJECT_PREFIXES=         # blank = SUMMARY_CHANNEL_ROUTES + ARCHIVE_PROJE
 SCORE_PARENT_DESCRIPTION=true   # a sub-task inherits its parent's description
 SCORE_MEDIA_IS_COMMENT=true     # a screenshot-only comment counts as an update
 SCORE_COMMIT_IN_COMMENT=true    # a commit id in a comment counts (no SCM linked)
+SCORE_REQUIRE_ASSIGNEE=true     # the comment's 10 points need the task assigned to them
 
 SCORE_CREDIT_DONE=1.0
 SCORE_CREDIT_REVIEW_COMMIT=1.0

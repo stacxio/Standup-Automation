@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -28,10 +29,18 @@ def comment(body: str, *, day: dt.date = TODAY, theirs: bool = True) -> sc.Comme
 
 def task(key: str = "SP-12", *, desc: str = "x" * 60, status: str = "In Progress",
          category: str = "In Progress", kind: str = "Story",
-         commit: bool = False, comments=()) -> sc.TaskFacts:
+         commit: bool = False, comments=(),
+         assignee: str = "Raghul", assigned: bool = True) -> sc.TaskFacts:
+    """A task the developer owns, unless `assigned=False` says otherwise.
+
+    Owning it is the ordinary case and every check but §4.5 ignores the field,
+    so defaulting to True keeps these fixtures about the thing each test is
+    actually asserting."""
     return sc.TaskFacts(key=key, description=desc, status=status, status_category=category,
                         issue_type=kind, has_linked_commit=commit,
-                        comments=tuple(comments), url=f"https://jira/browse/{key}")
+                        comments=tuple(comments), assignee=assignee,
+                        assigned_to_developer=assigned,
+                        url=f"https://jira/browse/{key}")
 
 
 def day(**kw) -> sc.DayFacts:
@@ -304,6 +313,71 @@ def one_comment(*comments) -> dict:
 def test_a_good_comment_scores():
     record = one_comment(comment("Finished the validation layer and pushed it."))
     assert record["points"]["comment"] == 10.0
+
+
+def test_a_comment_on_someone_elses_ticket_does_not_score():
+    """§4.5 — the 10 points are for moving your own ticket, not for commenting."""
+    record = score(day(picked_tasks=("SP-12",), tasks=(
+        task(assignee="Mallesh", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),)))
+    assert record["points"]["comment"] == 0.0
+
+
+def test_an_unassigned_ticket_does_not_score_either():
+    record = score(day(picked_tasks=("SP-12",), tasks=(
+        task(assignee="", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),)))
+    assert record["points"]["comment"] == 0.0
+
+
+def test_the_assignee_gate_says_which_of_the_two_it_was():
+    wrong = sc.comment_check(task(assignee="Mallesh", assigned=False), TODAY, T)
+    none_at_all = sc.comment_check(task(assignee="", assigned=False), TODAY, T)
+    assert wrong["reason"] == "not assigned to them"
+    assert none_at_all["reason"] == "unassigned in Jira"
+
+
+def test_the_gate_costs_only_the_comment_points():
+    """Description, commit and the 60 delivery credit are untouched by it."""
+    theirs = day(picked_tasks=("SP-12",), tasks=(
+        task(status="Done", category="Done", commit=True,
+             comments=(comment("Finished the validation layer and pushed it."),)),))
+    not_theirs = day(picked_tasks=("SP-12",), tasks=(
+        task(status="Done", category="Done", commit=True, assignee="Mallesh", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),))
+    a, b = score(theirs)["points"], score(not_theirs)["points"]
+    assert a["comment"] == 10.0 and b["comment"] == 0.0
+    for part in ("checkin", "picked", "description", "commit", "done"):
+        assert a[part] == b[part], part
+
+
+def test_the_gate_can_be_turned_off():
+    relaxed = replace(T, require_assignee_for_comment=False)
+    record = score(day(picked_tasks=("SP-12",), tasks=(
+        task(assignee="Mallesh", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),)),
+        thresholds=relaxed)
+    assert record["points"]["comment"] == 10.0
+
+
+def test_the_dm_says_why_the_comment_paid_nothing():
+    """Otherwise the developer did comment, scored 0, and cannot tell why."""
+    record = score(day(picked_tasks=("SP-12",), tasks=(
+        task(assignee="Mallesh", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),)))
+    dm = sc.compose_slack_dm(record)
+    assert "comment not counted: assigned to Mallesh" in dm
+
+    unassigned = score(day(picked_tasks=("SP-12",), tasks=(
+        task(assignee="", assigned=False,
+             comments=(comment("Finished the validation layer and pushed it."),)),)))
+    assert "comment not counted: unassigned in Jira" in sc.compose_slack_dm(unassigned)
+
+
+def test_the_dm_stays_quiet_about_ordinary_comment_failures():
+    """"Too short" is legible from the ticket; the note would just be noise."""
+    record = score(day(picked_tasks=("SP-12",), tasks=(task(comments=(comment("ok"),)),)))
+    assert "comment not counted" not in sc.compose_slack_dm(record)
 
 
 def test_someone_elses_comment_does_not_score_for_them():
