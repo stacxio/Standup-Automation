@@ -40,6 +40,8 @@ from standup_summarizer.fetch import (  # noqa: E402
 )
 from standup_summarizer.summarize import summarize  # noqa: E402
 
+import build_attendance as att  # noqa: E402
+
 HEADERS = [
     "Developer Name", "Date", "Projectname", "Task", "Value",
     "What got moved?", "Why it matters?", "Blockers?", "What's Next?", "Status",
@@ -87,6 +89,12 @@ def fetch_standup_entries(cfg: SlackConfig):
         cfg.channel_id, f"{oldest.timestamp():.6f}", f"{latest.timestamp():.6f}"
     )
 
+    # The report writes the author's Slack display name straight into the sheet,
+    # so a change of account splits one person into two rows a day apart. Fold
+    # the aliases here and both accounts land on one name — and keep landing
+    # there, since this tab is rebuilt from its 30-day window on every run.
+    aliases = att._alias_map()
+
     groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for msg in raw:
         if not _is_standup_message(msg):  # drop bots/system/joins/empty
@@ -95,7 +103,8 @@ def fetch_standup_entries(cfg: SlackConfig):
         if any(_ROLLCALL_LINE.match(line) for line in text.splitlines()):
             continue  # attendance roll-call, not a stand-up
         date = dt.datetime.fromtimestamp(float(msg["ts"])).strftime("%Y-%m-%d")
-        groups[(fetcher._resolve_name(msg["user"]), date)].append(text)
+        who = att._canonical(fetcher._resolve_name(msg["user"]), aliases)
+        groups[(who, date)].append(text)
 
     entries, texts = [], {}
     for (name, date), parts in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):

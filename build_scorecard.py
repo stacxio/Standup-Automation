@@ -402,9 +402,20 @@ def dm_developers(cfg: SlackConfig, records: list[dict],
 
 
 def slack_user_ids(cfg: SlackConfig, name_map: dict[str, str]) -> dict[str, str]:
-    """{short_name: Slack user id} for DMs, resolved from channel membership."""
+    """{short_name: Slack user id} for DMs, resolved from channel membership.
+
+    Someone who has moved to a new Slack account still has the old one sitting
+    in the channel, and an alias makes both fold to the same roster name. First
+    seen used to win, which is membership order — arbitrary, and on 26-08-2026
+    it picked Kavin's retired account, sending him a corrected scorecard on the
+    login he had stopped reading.
+
+    So an account whose own name *is* the roster name outranks one that only got
+    there through an alias: retiring the old name is what the alias is for.
+    """
     client = build_client(cfg.bot_token)
     ids: dict[str, str] = {}
+    exact: dict[str, str] = {}
     cursor = None
     while True:
         resp = client.conversations_members(channel=cfg.channel_id, limit=200, cursor=cursor)
@@ -416,10 +427,14 @@ def slack_user_ids(cfg: SlackConfig, name_map: dict[str, str]) -> dict[str, str]
             if info.get("is_bot") or info.get("deleted") or uid == "USLACKBOT":
                 continue
             name = info.get("profile", {}).get("real_name") or info.get("real_name") or ""
-            ids.setdefault(att._short_of(name, name_map), uid)
+            short = att._short_of(name, name_map)
+            if att._fold(name) == att._fold(short):
+                exact.setdefault(short, uid)
+            ids.setdefault(short, uid)
         cursor = (resp.get("response_metadata") or {}).get("next_cursor") or None
         if not cursor:
             break
+    ids.update(exact)
     return ids
 
 

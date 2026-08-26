@@ -83,3 +83,42 @@ def test_master_seed_carries_the_current_name():
     """The Master tab seeds employee details; a stale label misfiles payslips."""
     names = [row[0] for row in ba.MASTER_SEED]
     assert "Kavin" in names and "GN" not in names
+
+
+# --------------------------------------------------------------------------
+# Which of two accounts gets the DM
+# --------------------------------------------------------------------------
+def _pick(members, name_map):
+    """The tie-break slack_user_ids applies, without the Slack round trips."""
+    ids, exact = {}, {}
+    for uid, real_name in members:
+        short = ba._short_of(real_name, name_map)
+        if ba._fold(real_name) == ba._fold(short):
+            exact.setdefault(short, uid)
+        ids.setdefault(short, uid)
+    ids.update(exact)
+    return ids
+
+
+def test_the_dm_goes_to_the_account_that_owns_the_roster_name(monkeypatch):
+    """Membership order put the retired account first and it won the DM."""
+    monkeypatch.setenv("ROSTER_ALIASES", "GN:Kavin")
+    mapping = ba.roster_name_map(["Kavin", "Soma"])
+    members = [("U0AMMMQC4Q2", "KAVIN G N"),      # retired, listed first
+               ("U0BS24Y9MLK", "Kavin"),
+               ("U08C4R9CCJU", "Soma Pani")]
+    assert _pick(members, mapping)["Kavin"] == "U0BS24Y9MLK"
+
+
+def test_the_order_of_the_two_accounts_does_not_matter(monkeypatch):
+    monkeypatch.setenv("ROSTER_ALIASES", "GN:Kavin")
+    mapping = ba.roster_name_map(["Kavin"])
+    forward = [("U0BS24Y9MLK", "Kavin"), ("U0AMMMQC4Q2", "KAVIN G N")]
+    assert _pick(forward, mapping)["Kavin"] == "U0BS24Y9MLK"
+
+
+def test_one_account_still_resolves_without_an_exact_match(monkeypatch):
+    """"Malleshwaran M" never equals "Mallesh"; first-seen must still win."""
+    monkeypatch.delenv("ROSTER_ALIASES", raising=False)
+    mapping = ba.roster_name_map(["Mallesh"])
+    assert _pick([("U0BEK6E250V", "Malleshwaran M")], mapping)["Mallesh"] == "U0BEK6E250V"
