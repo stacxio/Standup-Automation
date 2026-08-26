@@ -86,7 +86,8 @@ def canonical() -> sc.DayFacts:
 def test_canonical_day_scores():
     record = score(canonical())
     assert record["points"] == {"checkin": 10.0, "picked": 5.0, "description": 6.7,
-                                "commit": 3.3, "comment": 6.7, "done": 45.0}
+                                "commit": 3.3, "comment": 6.7, "done": 45.0,
+                                "coordination": 0.0}
     assert record["process"] == 31.7
     assert record["delivery"] == 45.0    # (1.0 + 1.0 + 0.25) / 3 x 60
     assert record["total"] == 76.7
@@ -154,7 +155,8 @@ def test_absence_is_a_real_zero():
     assert record["status"] == sc.SCORED
     assert record["total"] == 0.0 and record["band"] == "At Risk"
     assert record["points"] == {"checkin": 0.0, "picked": 0.0, "description": 0.0,
-                                "commit": 0.0, "comment": 0.0, "done": 0.0}
+                                "commit": 0.0, "comment": 0.0, "done": 0.0,
+                                "coordination": 0.0}
 
 
 # --- per-day checks -------------------------------------------------------

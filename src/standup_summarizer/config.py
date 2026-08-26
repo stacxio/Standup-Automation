@@ -206,6 +206,26 @@ def _env_set(name: str, default: frozenset[str]) -> frozenset[str]:
     return frozenset(parts) if parts else default
 
 
+def _parse_coordination(raw: str | None) -> tuple[tuple[str, tuple[str, str]], ...]:
+    """"C0BEXR128DQ:Kavin+Madhan,C0BEZNFNJ1X:Raghul+Gokul" -> ((channel, (a, b)), ...).
+
+    A malformed entry is skipped rather than raising: the bonus is extra credit,
+    and a typo in it must not take down a run that scores everybody's actual
+    work. Exactly two names per channel — "a conversation between them" has no
+    meaning for one name, and for three it would not be this rule.
+    """
+    pairs: list[tuple[str, tuple[str, str]]] = []
+    for entry in (raw or "").split(","):
+        channel, sep, people = entry.partition(":")
+        if not sep:
+            continue
+        channel = channel.strip()
+        names = [n.strip() for n in people.split("+") if n.strip()]
+        if channel and len(names) == 2:
+            pairs.append((channel, (names[0], names[1])))
+    return tuple(pairs)
+
+
 @dataclass(frozen=True)
 class ScoreConfig:
     """Daily performance scoring — see docs/SCORING.md §10.
@@ -238,6 +258,19 @@ class ScoreConfig:
     """Issue-key prefixes that name a real Jira project. Empty means "derive
     them from SUMMARY_CHANNEL_ROUTES and ARCHIVE_PROJECT_NAMES", which is what
     every other agent already routes on."""
+    coordination_pairs: tuple[tuple[str, tuple[str, str]], ...] = ()
+    """§4.7 — ((channel_id, (developer, developer)), ...). Both members of a
+    pair posting in their channel on the scoring date earns each of them the
+    coordination bonus. Empty disables the check entirely."""
+
+    def coordination_for(self, developer: str) -> tuple[str, str] | None:
+        """(channel_id, partner) for `developer`, or None when they are in no pair."""
+        for channel, (a, b) in self.coordination_pairs:
+            if developer == a:
+                return channel, b
+            if developer == b:
+                return channel, a
+        return None
 
     @classmethod
     def from_env(cls) -> "ScoreConfig":
@@ -250,6 +283,7 @@ class ScoreConfig:
             commit=_env_float("SCORE_WEIGHT_COMMIT", 5.0),
             comment=_env_float("SCORE_WEIGHT_COMMENT", 10.0),
             done=_env_float("SCORE_WEIGHT_DONE", 60.0),
+            coordination=_env_float("SCORE_WEIGHT_COORDINATION", 10.0),
         )
         weights.validate()
         thresholds = scorecard.Thresholds(
@@ -289,6 +323,7 @@ class ScoreConfig:
                 p.strip().upper() for p in (_env("SCORE_PROJECT_PREFIXES") or "").split(",")
                 if p.strip()
             ),
+            coordination_pairs=_parse_coordination(_env("SCORE_COORDINATION")),
         )
 
     def score_channels(self, default_channel: str) -> list[str]:

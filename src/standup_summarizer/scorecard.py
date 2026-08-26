@@ -45,7 +45,7 @@ DAILY_HEADERS = [
     "Date", "Developer", "Attendance", "Status", "Reason",
     "Picked Tasks", "Tasks Picked", "Tasks Done", "Task Credit",
     "Check-in", "Task Picked", "Description", "Commit", "Comment", "Done",
-    "Process", "Delivery", "Volume Factor", "Total", "Band", "Flags",
+    "Process", "Delivery", "Coordination", "Volume Factor", "Total", "Band", "Flags",
     "Evidence", "Computed At",
 ]
 DATE_COLUMN = DAILY_HEADERS.index("Date")
@@ -155,6 +155,13 @@ class DayFacts:
     tasks: tuple[TaskFacts, ...] = ()
     median_picked: float | None = None
     """The developer's own trailing-30-day median; None when history is thin."""
+    coordinated: bool = False
+    """§4.7 — this developer and their pair both posted in their coordination
+    channel today. Decided by the caller, which is the half that reads Slack."""
+    coordination_partner: str = ""
+    coordination_channel: str = ""
+    """Who with and where, for the evidence and the DM. Empty when the developer
+    is in no pair, which is not the same fact as a pair that did not talk."""
     data_ok: bool = True
     data_error: str = ""
 
@@ -172,6 +179,12 @@ class Weights:
     commit: float = 5.0
     comment: float = 10.0
     done: float = 60.0
+
+    coordination: float = 10.0
+    """§4.7 — a bonus *on top of* the 100, not a share of it. It is deliberately
+    excluded from `process_max` and from `validate()`: coordinating is extra
+    credit, so taking it out of the six would mean everyone who works alone is
+    scored out of 90 for it."""
 
     @property
     def process_max(self) -> float:
@@ -450,7 +463,7 @@ def _round(value: float) -> float:
 
 def _blank_points() -> dict:
     return {"checkin": 0.0, "picked": 0.0, "description": 0.0,
-            "commit": 0.0, "comment": 0.0, "done": 0.0}
+            "commit": 0.0, "comment": 0.0, "done": 0.0, "coordination": 0.0}
 
 
 def _base(facts: DayFacts, computed_at: dt.datetime) -> dict:
@@ -469,6 +482,7 @@ def _base(facts: DayFacts, computed_at: dt.datetime) -> dict:
         "points": _blank_points(),
         "process": 0.0,
         "delivery": 0.0,
+        "coordination": 0.0,
         "volume_factor": 1.0,
         "total": 0.0,
         "band": "",
@@ -569,6 +583,14 @@ def score_day(facts: DayFacts, weights: Weights, thresholds: Thresholds,
         if vf < 1.0:
             flags.append("under_committed")
 
+    # §4.7 — added after the rescale, never inside it. A bonus folded into the
+    # unplanned-work rescale would be multiplied by 100/process_max and stop
+    # being 10 points; here it is the same 10 for everyone who earns it.
+    coordination = weights.coordination if facts.coordinated else 0.0
+    if coordination:
+        total += coordination
+        flags.append("coordinated")
+
     record.update({
         "tasks_done": done_count,
         "tasks_credit": round(credit_sum, 2),
@@ -576,9 +598,11 @@ def score_day(facts: DayFacts, weights: Weights, thresholds: Thresholds,
             "checkin": _round(checkin_pts), "picked": _round(picked_pts),
             "description": _round(description_pts), "commit": _round(commit_pts),
             "comment": _round(comment_pts), "done": _round(delivery),
+            "coordination": _round(coordination),
         },
         "process": _round(process),
         "delivery": _round(delivery),
+        "coordination": _round(coordination),
         "volume_factor": round(vf, 3),
         "total": _round(total),
         "band": band_of(total),
@@ -586,6 +610,11 @@ def score_day(facts: DayFacts, weights: Weights, thresholds: Thresholds,
         "evidence": {
             "checkin": {"passed": bool(facts.checked_in)},
             "picked": {"passed": bool(n), "count": n},
+            "coordination": {
+                "passed": bool(facts.coordinated),
+                "partner": facts.coordination_partner,
+                "channel": facts.coordination_channel,
+            },
             "tasks": per_task,
         },
     })
@@ -620,6 +649,7 @@ def daily_row(record: dict) -> list[str]:
         _cell(points.get("done")),
         _cell(record.get("process")),
         _cell(record.get("delivery")),
+        _cell(record.get("coordination")),
         _cell(record.get("volume_factor")),
         _cell(record.get("total")),
         record.get("band", ""),
@@ -726,6 +756,15 @@ def compose_slack_dm(record: dict) -> str:
                             ("Jira description", "description", 10), ("Commit linked", "commit", 5),
                             ("Jira comment", "comment", 10), ("Tasks done", "done", 60)):
         lines.append(f"  • {label}: {points.get(key, 0)}/{cap}")
+
+    # A bonus is not one of the six, so it is shown as what it is: a line that
+    # appears when earned rather than a 0/10 sitting under the others every day
+    # somebody worked alone.
+    coordination = (record.get("evidence") or {}).get("coordination") or {}
+    if points.get("coordination"):
+        partner = coordination.get("partner")
+        with_whom = f" with {partner}" if partner else ""
+        lines.append(f"  • Coordination: +{points['coordination']}{with_whom}")
 
     tasks = (record.get("evidence") or {}).get("tasks") or []
     if tasks:

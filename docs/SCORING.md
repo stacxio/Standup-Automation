@@ -24,6 +24,7 @@ Two properties this spec is built to guarantee:
 | 3 | Jira description present on the task | **10** | per task |
 | 4 | Commit ID linked to the task | **5** | per task |
 | 5 | Jira comment on the task by the developer, on a task assigned to them | **10** | per task |
+| 7 | Both of a paired channel posted there that day | **+10** | per day, *on top of the 100* |
 | 6 | Task Done — or In Review with a commit ID in a comment | **60** | per task |
 | | **Total** | **100** | |
 
@@ -232,6 +233,47 @@ directions. Every rung is configurable, because the right ladder depends on how 
 team uses its workflow.
 
 ---
+
+### 4.7 Coordination — 10 points, per day, binary, **on top of the 100**
+
+Two developers are paired to a shared channel. If **both** of them posted a
+message in that channel on the scoring date, each earns the bonus:
+
+| Pair | Channel |
+|------|---------|
+| Kavin + Madhan | `C0BEXR128DQ` (#bha-coordination) |
+| Raghul + Gokul | `C0BEZNFNJ1X` (#hirocom-cordination) |
+| Sahil + Mallesh | `C0B2FVBQPM5` (#stacx-coordination) |
+
+Configured by `SCORE_COORDINATION` as `channel:devA+devB`, comma separated;
+`SCORE_WEIGHT_COORDINATION` sets the size. Empty disables the check.
+
+**Both sides are required.** One person posting into an empty channel is not a
+conversation, and paying for it would reward talking rather than coordinating.
+Either both earn it or neither does.
+
+**It is a bonus, not a share.** The weight is deliberately outside
+`Weights.process_max` and outside `validate()`'s sum-to-100: a day that scored
+100 becomes **110**. Taking the 10 out of the hundred instead would mean
+everyone whose work is genuinely solo is scored out of 90 for it.
+
+It is added **after** the unplanned-work rescale of §5, never inside it —
+folded in before, the 10 would be multiplied by `100/process_max` and stop
+being 10 points.
+
+A day that is `Absent`, on leave or `Not Scored` earns nothing: there is no
+total to add to, and `0 + 10` for a day nobody worked would be absurd.
+
+> Source: `slack.conversations_history` for the channel, bounded to the scoring
+> date. Authors are folded onto roster names the same way everywhere else, so a
+> change of Slack account (§4.8) does not lose somebody their bonus.
+
+**A channel the bot cannot read never earns the bonus, and never fails the
+run.** It has `chat:write` but not `channels:join`, so it must be invited
+(`/invite`) into each channel; until then the pair is scored without it and the
+reason is printed. Extra credit must not be able to take down the scoring of
+everybody's actual work.
+
 
 ## 5. Formulas
 

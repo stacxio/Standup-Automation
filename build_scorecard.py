@@ -58,7 +58,7 @@ from standup_summarizer.config import (  # noqa: E402
     ScoreConfig,
     SlackConfig,
 )
-from standup_summarizer.fetch import build_client  # noqa: E402
+from standup_summarizer.fetch import _SlackFetcher, build_client  # noqa: E402
 
 import build_attendance as att  # noqa: E402
 import build_report as rep  # noqa: E402
@@ -232,11 +232,64 @@ def _category(key: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Coordination: did the pair actually talk today (SCORING.md §4.7)
+# --------------------------------------------------------------------------
+def coordinated_pairs(cfg: SlackConfig, score_cfg: ScoreConfig, day: dt.date,
+                      name_map: dict[str, str]) -> dict[str, bool]:
+    """{developer: both of the pair posted in their channel on `day`}.
+
+    One person posting into an empty channel is not a conversation, so both
+    sides are required and both earn it or neither does.
+
+    A channel the bot cannot read is reported and treated as "no coordination",
+    never as an error: the bonus is extra credit and must not be able to fail a
+    run that scores everybody's real work. It has chat:write but not
+    channels:join, so it must be invited (/invite) into each one.
+    """
+    if not score_cfg.coordination_pairs:
+        return {}
+
+    client = build_client(cfg.bot_token)
+    fetcher = _SlackFetcher(client)
+    start = dt.datetime.combine(day, dt.time.min).timestamp()
+    end = dt.datetime.combine(day, dt.time.max).timestamp()
+
+    earned: dict[str, bool] = {}
+    for channel, pair in score_cfg.coordination_pairs:
+        posted: set[str] = set()
+        try:
+            resp = retrying.retry_api(
+                lambda: client.conversations_history(
+                    channel=channel, oldest=str(start), latest=str(end), limit=200),
+                describe=f"coordination history {channel}")
+            for msg in resp.get("messages", []):
+                if msg.get("subtype") or not msg.get("user"):
+                    continue          # joins, topic changes, bot posts
+                posted.add(att._short_of(fetcher._resolve_name(msg["user"]), name_map))
+        except Exception as exc:      # noqa: BLE001
+            print(f"  coordination: cannot read {channel} ({exc}) — "
+                  f"{' and '.join(pair)} scored without it")
+            for who in pair:
+                earned[who] = False
+            continue
+
+        both = all(who in posted for who in pair)
+        for who in pair:
+            earned[who] = both
+        talkers = ", ".join(sorted(posted)) or "nobody"
+        print(f"  coordination {channel}: {' + '.join(pair)} -> "
+              f"{'both posted' if both else 'no'}  (posted: {talkers})")
+    return earned
+
+
+# --------------------------------------------------------------------------
 # Assembling a day
 # --------------------------------------------------------------------------
 def build_day_facts(developer: str, day: dt.date, picked: list[str],
                     roll_calls, leaves, facts: JiraFacts,
-                    median: float | None) -> sc.DayFacts:
+                    median: float | None, coordination: tuple[bool, str, str] = (False, "", ""),
+                    ) -> sc.DayFacts:
+    coordinated, partner, coord_channel = coordination
     attendance, checked_in = attendance_of(developer, day, roll_calls, leaves)
 
     if not attendance:
@@ -256,12 +309,16 @@ def build_day_facts(developer: str, day: dt.date, picked: list[str],
         return sc.DayFacts(developer=developer, date=day, attendance=attendance,
                            checked_in=checked_in, picked_tasks=tuple(picked),
                            data_ok=not picked,
-                           data_error="jira not configured" if picked else "")
+                           data_error="jira not configured" if picked else "",
+                           coordinated=coordinated, coordination_partner=partner,
+                           coordination_channel=coord_channel)
 
     tasks = [t for t in (facts.task(k, developer) for k in picked) if t is not None]
     return sc.DayFacts(
         developer=developer, date=day, attendance=attendance, checked_in=checked_in,
         picked_tasks=tuple(picked), tasks=tuple(tasks), median_picked=median,
+        coordinated=coordinated, coordination_partner=partner,
+        coordination_channel=coord_channel,
     )
 
 
@@ -575,13 +632,18 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     history = read_tab(sh, DAILY_TAB)
     facts = JiraFacts(jira_cfg, name_map)
     computed_at = dt.datetime.now()
+    coordination = coordinated_pairs(cfg, score_cfg, day, name_map)
 
     records = []
     for developer in order:
         picked = frozen.get(developer, [])
+        paired = score_cfg.coordination_for(developer)
         day_facts = build_day_facts(
             developer, day, picked, roll_calls, leaves, facts,
             median_picked(history, developer, day),
+            coordination=(coordination.get(developer, False),
+                          paired[1] if paired else "",
+                          paired[0] if paired else ""),
         )
         records.append(sc.score_day(day_facts, score_cfg.weights, score_cfg.thresholds,
                                     computed_at=computed_at))
