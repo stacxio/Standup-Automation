@@ -849,16 +849,23 @@ def compose_slack_roster(records: list[dict], *, order: str = "roster") -> str:
         counts.append(f"{unscored} not scored")
 
     width = max([len(r.get("developer", "")) for r in rows] + [9])
-    head = f"{'Developer':<{width}}  {'Total':>5}  {'Process':>7}  {'Delivery':>8}  State"
+    head = (f"{'Developer':<{width}}  {'Total':>5}  {'Process':>7}  {'Delivery':>8}"
+            f"  {'Coordination':>12}  State")
     lines = [head]
     for record in rows:
         name = str(record.get("developer", ""))[:width]
         if record.get("status") != SCORED:
-            lines.append(f"{name:<{width}}  {'—':>5}  {'—':>7}  {'—':>8}  {_state_of(record)}")
+            lines.append(f"{name:<{width}}  {'—':>5}  {'—':>7}  {'—':>8}  {'—':>12}"
+                         f"  {_state_of(record)}")
             continue
+        # Signed, because this is the one column added to the total rather than
+        # taken out of it: "+10.0" reads as a bonus, "10.0" reads as ten out of
+        # some hundred. A dash where it was not earned keeps the column scannable.
+        bonus = (record.get("points") or {}).get("coordination", 0) or 0
         lines.append(
             f"{name:<{width}}  {record.get('total', 0):>5}  {record.get('process', 0):>7}"
-            f"  {record.get('delivery', 0):>8}  {_state_of(record)}"
+            f"  {record.get('delivery', 0):>8}  {('+' + str(bonus)) if bonus else '—':>12}"
+            f"  {_state_of(record)}"
         )
 
     return (
@@ -867,7 +874,9 @@ def compose_slack_roster(records: list[dict], *, order: str = "roster") -> str:
         "```\n" + "\n".join(lines) + "\n```\n"
         "_Process 40 = check-in 10 · task id 5 · description 10 · commit 5 · comment 10._\n"
         "_Delivery 60 = per task: Done 100% · in review 50% (100% with a commit id) "
-        "· in progress 25%._"
+        "· in progress 25%._\n"
+        "_Coordination +10 = you and your pair both posted in your coordination "
+        "channel that day. It is added on top of the 100._"
     )
 
 

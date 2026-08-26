@@ -144,3 +144,41 @@ def test_lookup_finds_either_side_of_a_pair():
     assert cfg.coordination_for("Kavin") == ("C0BEXR128DQ", "Madhan")
     assert cfg.coordination_for("Madhan") == ("C0BEXR128DQ", "Kavin")
     assert cfg.coordination_for("Soma") is None
+
+
+# --------------------------------------------------------------------------
+# The daily channel post — the table people actually read
+# --------------------------------------------------------------------------
+def _post(*records) -> str:
+    return sc.compose_slack_roster(list(records))
+
+
+def test_the_daily_post_has_the_column_right_after_delivery():
+    """It was in the sheet and the DM but not here, which is where people look."""
+    post = _post(score(day(coordinated=True, coordination_partner="Madhan")))
+    header = next(line for line in post.splitlines() if line.startswith("Developer"))
+    assert header.index("Coordination") > header.index("Delivery")
+    assert header.index("Coordination") < header.index("State")
+
+
+def test_the_post_signs_the_bonus():
+    """"+10.0" reads as added on; "10.0" would read as ten out of some hundred."""
+    assert "+10.0" in _post(score(day(coordinated=True)))
+
+
+def test_the_post_dashes_a_day_it_was_not_earned():
+    post = _post(score(day()))
+    row = next(line for line in post.splitlines() if line.startswith("Kavin"))
+    assert "+" not in row
+
+
+def test_the_post_explains_the_column():
+    assert "Coordination +10" in _post(score(day(coordinated=True)))
+
+
+def test_an_unscored_row_keeps_the_columns_aligned():
+    unscored = score(day(data_ok=False, data_error="jira unreachable"))
+    post = _post(score(day(coordinated=True)), unscored)
+    body = [l for l in post.splitlines() if l and not l.startswith(("*", "_", "`", "Team"))]
+    assert len({len(l.split()) for l in body}) <= 3   # header + scored + not-scored shapes
+    assert "Not scored" in post
