@@ -50,7 +50,7 @@ HEADER_BG = "1F4E78"
 def slack_standups(cfg: SlackConfig, day: dt.date) -> dict[str, str]:
     """Return {short_name: combined stand-up text} for `day`, roster order."""
     order, _roll, _status, _leaves = att.fetch_channel(cfg)
-    name_map = {s.lower().replace(" ", ""): s for s in order}
+    name_map = att.roster_name_map(order)
 
     entries, _ = rep.fetch_standup_entries(cfg)
     tid = day.isoformat()

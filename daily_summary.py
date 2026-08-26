@@ -362,7 +362,7 @@ def _previous_tasks(days: dict[str, list[str]], today_iso: str) -> list[str]:
 def gather(cfg: SlackConfig, jira_cfg, today: dt.date) -> list[dict]:
     """Return one digest record per roster member, for `today`."""
     order, _roll_calls, status_dates, _leaves = att.fetch_channel(cfg)
-    name_map = {s.lower().replace(" ", ""): s for s in order}
+    name_map = att.roster_name_map(order)
 
     # Jira ids per developer per date. The report uses full display names, so
     # fold them onto the same short names the attendance sheet uses.

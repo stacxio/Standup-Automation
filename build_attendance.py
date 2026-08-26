@@ -175,6 +175,54 @@ def _parse_date(text: str) -> dt.date | None:
         return None
 
 
+def _alias_map() -> dict[str, str]:
+    """ROSTER_ALIASES="GN:Kavin" -> {"gn": "Kavin"}: one person, one roster row.
+
+    A new Slack account is a new author name, and the roll-call keeps using the
+    old one — so the person checks in under one identity and is marked present
+    under another, and neither is whole. Kavin G N moved from "G N"
+    (U0AMMMQC4Q2) to "Kavin" (U0BS24Y9MLK) on 24-08-2026: from then on the
+    roll-call said GN while every check-in arrived as Kavin, so GN scored 10/100
+    for "no tasks" on 25-08 while Kavin — who had named BHA-130 — was not on the
+    roster at all.
+
+    Both sides of the alias resolve, whichever the roll-call happens to use.
+    """
+    aliases: dict[str, str] = {}
+    for pair in (os.environ.get("ROSTER_ALIASES", "") or "").split(","):
+        old, sep, new = pair.partition(":")
+        old, new = old.strip(), new.strip()
+        if sep and old and new:
+            aliases[_fold(old)] = new
+            aliases.setdefault(_fold(new), new)
+    return aliases
+
+
+def _fold(name: str) -> str:
+    return name.lower().replace(" ", "")
+
+
+def _canonical(name: str, aliases: dict[str, str]) -> str:
+    """The roster label for `name`, following an alias when one is configured."""
+    return aliases.get(_fold(name), name)
+
+
+def roster_name_map(order) -> dict[str, str]:
+    """Token -> roster label, for folding an author name onto the roster.
+
+    Three agents used to build this inline from `order` alone, which silently
+    dropped every alias: the roster carried the new name while the retired one
+    matched nothing, so a year of that person's history stopped resolving.
+
+    Aliases are applied last and win. Retiring a label is exactly what an alias
+    is for, so a roster still carrying the old one must not out-rank it —
+    otherwise the alias quietly does nothing for as long as it is needed most.
+    """
+    mapping = {_fold(s): s for s in order}
+    mapping.update(_alias_map())
+    return mapping
+
+
 def _short_of(name: str, mapping: dict[str, str]) -> str:
     """Map a full/author name or roll-call token to a canonical short label."""
     key = name.lower().replace(" ", "")
@@ -221,7 +269,10 @@ def fetch_channel(cfg: SlackConfig):
 
     # Short-name resolution table: token (lowercased, no spaces) -> short label.
     # Roll-call short tokens win; full names map onto whichever short they match.
-    name_map: dict[str, str] = {}
+    # Seeded with the aliases so a retired name still resolves after the
+    # roll-call stops using it, and the new one resolves before it starts.
+    aliases = _alias_map()
+    name_map: dict[str, str] = dict(aliases)
 
     parsed: list[tuple] = []  # (post_date, author_full, text, entries)
     for msg in raw:
@@ -236,7 +287,7 @@ def fetch_channel(cfg: SlackConfig):
                 entries.append(entry)
         parsed.append((post_date, author, text, entries))
         for short, _ in entries:
-            name_map.setdefault(short.lower().replace(" ", ""), short)
+            name_map.setdefault(_fold(short), _canonical(short, aliases))
 
     # Make sure full member names map to a short label (prefer roll-call short).
     def canon(name: str) -> str:
@@ -245,6 +296,7 @@ def fetch_channel(cfg: SlackConfig):
     for post_date, author, text, entries in parsed:
         if entries:  # roll-call message
             for short, att in entries:
+                short = _canonical(short, aliases)
                 roll_calls[post_date][short] = att
                 if short not in order:
                     order.append(short)
@@ -407,7 +459,7 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
 # it, and it sits after Gross Salary so read_master()'s positional columns hold.
 MASTER_HEADERS = ["Name", "Employee ID", "Designation", "Gross Salary", "Date of Joining"]
 MASTER_SEED = [
-    ["GN", 1234, "Engineer", 50000, ""],
+    ["Kavin", 1234, "Engineer", 50000, ""],
     ["Soma", 9999, "Engineer", 50000, ""],
     ["Raghul", 6666, "Engineer", 50000, ""],
     ["Sahil", 3333, "Engineer", 50000, ""],

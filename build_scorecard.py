@@ -81,7 +81,7 @@ MEDIAN_MIN_DAYS = 10
 def read_channel(cfg: SlackConfig):
     """Roster + attendance + stand-up text, one pass over the check-in channel."""
     order, roll_calls, _status_dates, leaves = att.fetch_channel(cfg)
-    name_map = {s.lower().replace(" ", ""): s for s in order}
+    name_map = att.roster_name_map(order)
     entries, _texts = rep.fetch_standup_entries(cfg)
 
     standups: dict[tuple[str, str], list[str]] = defaultdict(list)
