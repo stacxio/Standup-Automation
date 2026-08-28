@@ -146,6 +146,25 @@ def test_lookup_finds_either_side_of_a_pair():
     assert cfg.coordination_for("Soma") is None
 
 
+def test_a_pair_written_under_a_retired_name_still_matches(monkeypatch):
+    """SCORE_COORDINATION names the pair by roster label, so a rename reaches it.
+
+    Everything the bonus compares against is canonical, so a pair left saying
+    "Kavin" after the roster moved to "Kevin" matches nobody: `coordination_for`
+    returns None and both halves quietly lose 10 points a day. Renaming somebody
+    must not cost them points somewhere else in the config.
+    """
+    monkeypatch.setenv("ROSTER_ALIASES", "GN:Kevin,Kavin:Kevin")
+    import build_attendance as ba
+    import build_scorecard as bs
+
+    stale = ScoreConfig(weights=W, thresholds=T,
+                        coordination_pairs=(("C0BEXR128DQ", ("Kavin", "Madhan")),))
+    fresh = bs.canonical_pairs(stale, ba.roster_name_map(["Kevin", "Madhan"]))
+    assert fresh.coordination_pairs == (("C0BEXR128DQ", ("Kevin", "Madhan")),)
+    assert fresh.coordination_for("Kevin") == ("C0BEXR128DQ", "Madhan")
+
+
 # --------------------------------------------------------------------------
 # The daily channel post — the table people actually read
 # --------------------------------------------------------------------------

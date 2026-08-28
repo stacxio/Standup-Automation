@@ -241,7 +241,7 @@ message in that channel on the scoring date, each earns the bonus:
 
 | Pair | Channel |
 |------|---------|
-| Kavin + Madhan | `C0BEXR128DQ` (#bha-coordination) |
+| Kevin + Madhan | `C0BEXR128DQ` (#bha-coordination) |
 | Raghul + Gokul | `C0BEZNFNJ1X` (#hirocom-cordination) |
 | Sahil + Mallesh | `C0B2FVBQPM5` (#stacx-coordination) |
 

@@ -11,7 +11,7 @@ by the summarize / gap / verify agents.
 
 | Kind | What |
 |------|------|
-| **Slack — #stacx-check-in** | Developers post roll-calls (`GN-Present`), daily stand-ups, and leave messages. This is the primary input channel and the summary fallback. |
+| **Slack — #stacx-check-in** | Developers post roll-calls (`Kevin-Present`), daily stand-ups, and leave messages. This is the primary input channel and the summary fallback. |
 | **Slack — #feedback-stacx / #feedback-hirocom / #feedback-bha** | Per-project routing targets for the daily digest. |
 | **Jira (stacx24team.atlassian.net)** | Issue status, description, comments, assignee, priority, attachments, and dev-panel branch/commit/PR. |
 | **Otter.ai export** | Google Meet stand-up transcript, supplied as a `.txt` export/paste (method A — no login/scrape). Used by the two audit agents. |

@@ -44,6 +44,7 @@ import os
 import statistics
 import sys
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -234,6 +235,20 @@ def _category(key: str) -> str:
 # --------------------------------------------------------------------------
 # Coordination: did the pair actually talk today (SCORING.md §4.7)
 # --------------------------------------------------------------------------
+def canonical_pairs(score_cfg: ScoreConfig, name_map: dict[str, str]) -> ScoreConfig:
+    """SCORE_COORDINATION names the pair by roster label — fold those through
+    the aliases too.
+
+    Everything the bonus compares against is already canonical, so a pair still
+    written under a retired name matches nobody: `coordination_for` returns None
+    and both halves silently lose the bonus for as long as the rename stands.
+    Renaming a person must not quietly cost them points somewhere else.
+    """
+    pairs = tuple((channel, (att._short_of(a, name_map), att._short_of(b, name_map)))
+                  for channel, (a, b) in score_cfg.coordination_pairs)
+    return replace(score_cfg, coordination_pairs=pairs)
+
+
 def coordinated_pairs(cfg: SlackConfig, score_cfg: ScoreConfig, day: dt.date,
                       name_map: dict[str, str]) -> dict[str, bool]:
     """{developer: both of the pair posted in their channel on `day`}.
@@ -461,18 +476,11 @@ def dm_developers(cfg: SlackConfig, records: list[dict],
 def slack_user_ids(cfg: SlackConfig, name_map: dict[str, str]) -> dict[str, str]:
     """{short_name: Slack user id} for DMs, resolved from channel membership.
 
-    Someone who has moved to a new Slack account still has the old one sitting
-    in the channel, and an alias makes both fold to the same roster name. First
-    seen used to win, which is membership order — arbitrary, and on 26-08-2026
-    it picked Kavin's retired account, sending him a corrected scorecard on the
-    login he had stopped reading.
-
-    So an account whose own name *is* the roster name outranks one that only got
-    there through an alias: retiring the old name is what the alias is for.
+    Which of a person's two accounts wins is `att.pick_accounts`; this only
+    reads the channel's human members and hands it the names.
     """
     client = build_client(cfg.bot_token)
-    ids: dict[str, str] = {}
-    exact: dict[str, str] = {}
+    members: list[tuple[str, str]] = []
     cursor = None
     while True:
         resp = client.conversations_members(channel=cfg.channel_id, limit=200, cursor=cursor)
@@ -484,15 +492,11 @@ def slack_user_ids(cfg: SlackConfig, name_map: dict[str, str]) -> dict[str, str]
             if info.get("is_bot") or info.get("deleted") or uid == "USLACKBOT":
                 continue
             name = info.get("profile", {}).get("real_name") or info.get("real_name") or ""
-            short = att._short_of(name, name_map)
-            if att._fold(name) == att._fold(short):
-                exact.setdefault(short, uid)
-            ids.setdefault(short, uid)
+            members.append((uid, name))
         cursor = (resp.get("response_metadata") or {}).get("next_cursor") or None
         if not cursor:
             break
-    ids.update(exact)
-    return ids
+    return att.pick_accounts(members, name_map)
 
 
 # --------------------------------------------------------------------------
@@ -632,6 +636,7 @@ def do_score(day: dt.date, cfg: SlackConfig, score_cfg: ScoreConfig, sh, *,
     history = read_tab(sh, DAILY_TAB)
     facts = JiraFacts(jira_cfg, name_map)
     computed_at = dt.datetime.now()
+    score_cfg = canonical_pairs(score_cfg, name_map)
     coordination = coordinated_pairs(cfg, score_cfg, day, name_map)
 
     records = []

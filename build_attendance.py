@@ -176,7 +176,7 @@ def _parse_date(text: str) -> dt.date | None:
 
 
 def _alias_map() -> dict[str, str]:
-    """ROSTER_ALIASES="GN:Kavin" -> {"gn": "Kavin"}: one person, one roster row.
+    """ROSTER_ALIASES="GN:Kevin" -> {"gn": "Kevin"}: one person, one roster row.
 
     A new Slack account is a new author name, and the roll-call keeps using the
     old one — so the person checks in under one identity and is marked present
@@ -186,7 +186,10 @@ def _alias_map() -> dict[str, str]:
     for "no tasks" on 25-08 while Kavin — who had named BHA-130 — was not on the
     roster at all.
 
-    Both sides of the alias resolve, whichever the roll-call happens to use.
+    A name can be retired more than once. From 27-08-2026 the roll-call spells
+    him "Kevin" while Slack still says "Kavin", so all three names chain onto
+    the one label: "GN:Kevin,Kavin:Kevin". Every side of the chain resolves,
+    whichever the roll-call happens to use.
     """
     aliases: dict[str, str] = {}
     for pair in (os.environ.get("ROSTER_ALIASES", "") or "").split(","):
@@ -221,6 +224,33 @@ def roster_name_map(order) -> dict[str, str]:
     mapping = {_fold(s): s for s in order}
     mapping.update(_alias_map())
     return mapping
+
+
+def pick_accounts(members, mapping: dict[str, str]) -> dict[str, str]:
+    """{roster label: Slack user id}, from (user id, real name) pairs.
+
+    Someone who has moved to a new Slack account still has the old one sitting
+    in the channel, and an alias folds both onto the same label. First seen used
+    to win, which is membership order — arbitrary, and on 26-08-2026 it picked
+    Kavin's retired account, sending him a corrected scorecard on the login he
+    had stopped reading.
+
+    So an account that names itself outranks one that only got there by being a
+    longer string the label happened to match. "Kavin" is a name the map knows —
+    the alias key for the label "Kevin" — while "KAVIN G N" is nobody's name and
+    reached the label only through a prefix. That the roster spells him "Kevin"
+    and Slack "Kavin" must not decide it: the retired account answers to neither
+    spelling, and the point of retiring a name is that it stops winning.
+    """
+    ids: dict[str, str] = {}
+    named: dict[str, str] = {}
+    for uid, real_name in members:
+        short = _short_of(real_name, mapping)
+        if _fold(real_name) in mapping:
+            named.setdefault(short, uid)
+        ids.setdefault(short, uid)
+    ids.update(named)
+    return ids
 
 
 def _short_of(name: str, mapping: dict[str, str]) -> str:
@@ -459,7 +489,7 @@ def push(spreadsheet_id: str, key_path: str, month_tabs: list[tuple], summary):
 # it, and it sits after Gross Salary so read_master()'s positional columns hold.
 MASTER_HEADERS = ["Name", "Employee ID", "Designation", "Gross Salary", "Date of Joining"]
 MASTER_SEED = [
-    ["Kavin", 1234, "Engineer", 50000, ""],
+    ["Kevin", 1234, "Engineer", 50000, ""],
     ["Soma", 9999, "Engineer", 50000, ""],
     ["Raghul", 6666, "Engineer", 50000, ""],
     ["Sahil", 3333, "Engineer", 50000, ""],

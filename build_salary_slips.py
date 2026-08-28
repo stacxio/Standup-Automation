@@ -42,7 +42,7 @@ PAYMENT_MODE = "Bank Transfer"
 CUR = "Rs."  # Helvetica can't render the rupee glyph cleanly, so use "Rs."
 
 # Master short names -> full names for the payslip's Employee Name.
-NAME_MAP = {"GN": "G N", "Soma": "Soma Pani", "Raghul": "Raghul", "Sahil": "Sahil Thakur"}
+NAME_MAP = {"Soma": "Soma Pani", "Raghul": "Raghul", "Sahil": "Sahil Thakur"}
 MONTH_ABBR = [calendar.month_abbr[m] for m in range(1, 13)]
 
 
