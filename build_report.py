@@ -55,6 +55,12 @@ HEADERS = [
 _JIRA_ID = re.compile(r"\b([A-Za-z][A-Za-z0-9]+)[ \t]*-[ \t]*(\d+)\b")
 # Max length of an all-caps project key accepted with spaces around the hyphen.
 _MAX_SPACED_KEY = 10
+# Slack italic markup running straight into a key: "_*Task ID:*_SP-28". `_` is a
+# word character, so the \b above never fires between the closing underscore and
+# the key, and the whole check-in reads as "no task id" (Soma, 01-09-2026). An
+# underscore flanked by alphanumerics on both sides belongs to an identifier
+# (refresh_emi_matview) and is left alone, or its tail reads as an issue key.
+_MARKUP_UNDERSCORE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])")
 
 LOOKBACK_DAYS = int(os.environ.get("REPORT_LOOKBACK_DAYS", "30") or 30)
 
@@ -148,10 +154,11 @@ def extract_jira_ids(text: str) -> list[str]:
 
     "HIR - 72" and "BHA- 79" normalise to HIR-72 / BHA-79. Spacing is only
     tolerated for short all-caps keys, so ordinary prose ("Best for page - 2")
-    is not mistaken for an issue id.
+    is not mistaken for an issue id. Slack italic markup touching the key
+    ("_*Task ID:*_SP-28") is stripped first — see `_MARKUP_UNDERSCORE`.
     """
     seen: dict[str, None] = {}
-    for m in _JIRA_ID.finditer(text or ""):
+    for m in _JIRA_ID.finditer(_MARKUP_UNDERSCORE.sub(" ", text or "")):
         key, number = m.group(1), m.group(2)
         spaced = " " in m.group(0) or "\t" in m.group(0)
         if spaced and not (key.isupper() and len(key) <= _MAX_SPACED_KEY):

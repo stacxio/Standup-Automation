@@ -53,6 +53,39 @@ def test_unspaced_lowercase_still_matches():
     assert extract_jira_ids("breach pi-01 humidity") == ["PI-01"]
 
 
+# --- Slack italic markup glued to the key ---------------------------------
+# Real miss (Soma, 01-09-2026): "_*Task ID:*_SP-28" scored 0 tasks for the day.
+# `_` is a word character, so the leading word boundary never fires between
+# the closing italic underscore and the key: the check-in read as "no task id".
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("_*Task ID:*_SP-28", ["SP-28"]),          # the real one
+        ("_SP-28_", ["SP-28"]),                    # italic-wrapped key
+        ("*_SP-28_*", ["SP-28"]),                  # bold + italic
+        ("_SP-28", ["SP-28"]),                     # markup at string start
+        ("_*Task ID:*_ SP-28", ["SP-28"]),         # spaced: worked before, still does
+    ],
+)
+def test_markup_underscore_does_not_hide_a_key(text, expected):
+    assert extract_jira_ids(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "refresh_emi_matview-2",   # snake_case identifier, not an issue key
+        "run_repair_batch.py",
+        "feature_data-deletion-fix",
+    ],
+)
+def test_an_underscore_inside_a_word_is_not_markup(text):
+    """An identifier's own underscore must stay put, or its tail reads as a key."""
+    assert extract_jira_ids(text) == []
+
+
 def test_order_is_first_appearance():
     text = "moved WS-179, WS-177 and WS-178"
     assert extract_jira_ids(text) == ["WS-179", "WS-177", "WS-178"]
