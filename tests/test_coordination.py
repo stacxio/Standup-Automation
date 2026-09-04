@@ -195,9 +195,18 @@ def test_the_post_explains_the_column():
     assert "Coordination +10" in _post(score(day(coordinated=True)))
 
 
+def test_the_bonus_is_named_in_the_persons_breakdown_too():
+    """The column says a bonus was earned; the breakdown says who with."""
+    block = _post(score(day(coordinated=True,
+                            coordination_partner="Madhan"))).split("```")[2]
+    assert "• Coordination: +10.0 with Madhan" in block
+    assert "• Coordination" not in _post(score(day())).split("```")[2]
+
+
 def test_an_unscored_row_keeps_the_columns_aligned():
     unscored = score(day(data_ok=False, data_error="jira unreachable"))
     post = _post(score(day(coordinated=True)), unscored)
-    body = [l for l in post.splitlines() if l and not l.startswith(("*", "_", "`", "Team"))]
+    # The table only — the per-developer breakdown under it is prose, not columns.
+    body = [l for l in post.split("```")[1].splitlines() if l]
     assert len({len(l.split()) for l in body}) <= 3   # header + scored + not-scored shapes
     assert "Not scored" in post

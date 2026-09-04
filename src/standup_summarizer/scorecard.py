@@ -62,6 +62,14 @@ HALF_DAY = "half day"
 
 BANDS = ((85.0, "Excellent"), (70.0, "On Track"), (50.0, "Needs Attention"), (0.0, "At Risk"))
 
+# The six checks, in the order they are read out everywhere a score is
+# explained. One definition, because the DM and the channel post now print the
+# same list and a cap that drifted between them would be a scoring bug that
+# only showed up as a mismatched denominator in Slack.
+CHECKS = (("Check-in", "checkin", 10), ("Task picked", "picked", 5),
+          ("Jira description", "description", 10), ("Commit linked", "commit", 5),
+          ("Jira comment", "comment", 10), ("Tasks done", "done", 60))
+
 # A commit reference in free text, in three forms.
 #   1. a commit URL path, whatever it is labelled:  .../commit/9f8e7d6
 _COMMIT_URL = re.compile(r"/commits?/[0-9a-fA-F]{7,40}")
@@ -735,6 +743,26 @@ def month_matrix(records: list[dict], year: int, month: int,
 # --------------------------------------------------------------------------
 # Slack surfaces
 # --------------------------------------------------------------------------
+def _check_lines(record: dict) -> list[str]:
+    """The six checks read out one per line, plus the bonus when it was earned.
+
+    Shared by the DM and the daily post so a person sees the same six numbers
+    wherever they read them.
+    """
+    points = record.get("points") or {}
+    lines = [f"  • {label}: {points.get(key, 0)}/{cap}" for label, key, cap in CHECKS]
+
+    # A bonus is not one of the six, so it is shown as what it is: a line that
+    # appears when earned rather than a 0/10 sitting under the others every day
+    # somebody worked alone.
+    if points.get("coordination"):
+        coordination = (record.get("evidence") or {}).get("coordination") or {}
+        partner = coordination.get("partner")
+        with_whom = f" with {partner}" if partner else ""
+        lines.append(f"  • Coordination: +{points['coordination']}{with_whom}")
+    return lines
+
+
 def compose_slack_dm(record: dict) -> str:
     """The individual breakdown — the only place a person's score is stated."""
     date = record["date"]
@@ -752,19 +780,7 @@ def compose_slack_dm(record: dict) -> str:
         lines.append("Marked absent — no checks were run.")
         return "\n".join(lines).rstrip()
 
-    for label, key, cap in (("Check-in", "checkin", 10), ("Task picked", "picked", 5),
-                            ("Jira description", "description", 10), ("Commit linked", "commit", 5),
-                            ("Jira comment", "comment", 10), ("Tasks done", "done", 60)):
-        lines.append(f"  • {label}: {points.get(key, 0)}/{cap}")
-
-    # A bonus is not one of the six, so it is shown as what it is: a line that
-    # appears when earned rather than a 0/10 sitting under the others every day
-    # somebody worked alone.
-    coordination = (record.get("evidence") or {}).get("coordination") or {}
-    if points.get("coordination"):
-        partner = coordination.get("partner")
-        with_whom = f" with {partner}" if partner else ""
-        lines.append(f"  • Coordination: +{points['coordination']}{with_whom}")
+    lines += _check_lines(record)
 
     tasks = (record.get("evidence") or {}).get("tasks") or []
     if tasks:
@@ -872,12 +888,44 @@ def compose_slack_roster(records: list[dict], *, order: str = "roster") -> str:
         f"*Daily Scorecard — {date}*\n"
         f"Team average *{'—' if average is None else average}*/100 · {' · '.join(counts)}\n"
         "```\n" + "\n".join(lines) + "\n```\n"
+        + _breakdown_section(rows) +
         "_Process 40 = check-in 10 · task id 5 · description 10 · commit 5 · comment 10._\n"
         "_Delivery 60 = per task: Done 100% · in review 50% (100% with a commit id) "
         "· in progress 25%._\n"
         "_Coordination +10 = you and your pair both posted in your coordination "
         "channel that day. It is added on top of the 100._"
     )
+
+
+def _breakdown_section(rows: list[dict]) -> str:
+    """Per-developer check-by-check detail, printed under the table.
+
+    The table says who scored what; this says what it was scored on, so a
+    person reading the channel can see which check cost them the points instead
+    of having to open their DM. Per-task evidence stays in the DM (SCORING.md
+    §8.3): it is the one part of the breakdown that is about a particular
+    ticket rather than a daily habit, and it is what would turn this section
+    into a wall of text.
+
+    A day that was never scored has no six numbers to print, so it says why
+    instead of printing six zeros — the same distinction the table makes.
+    """
+    blocks = []
+    for record in rows:
+        name = record.get("developer", "")
+        if record.get("status") != SCORED:
+            blocks.append(f"*{name}* — {_state_of(record)}")
+            continue
+        if _norm(record.get("attendance", "")) == "absent":
+            blocks.append(f"*{name}* — absent, no checks were run")
+            continue
+        head = (f"*{name}* — {record.get('total', 0)}/100 · "
+                f"Process {record.get('process', 0)}/40 · "
+                f"Delivery {record.get('delivery', 0)}/60")
+        blocks.append("\n".join([head] + _check_lines(record)))
+    if not blocks:
+        return ""
+    return "\n\n".join(blocks) + "\n\n"
 
 
 def compose_nudge(mention: str, channel_id: str) -> str:

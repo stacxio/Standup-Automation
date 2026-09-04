@@ -681,6 +681,44 @@ def test_long_names_do_not_break_the_column_alignment():
         assert line[end] == " "
 
 
+def test_the_post_breaks_every_developer_down_check_by_check():
+    """The table says who scored what; this says what it was scored on."""
+    text = sc.compose_slack_roster(roster_records())
+    block = text.split("```")[2]
+    assert "*Raghul* — 76.7/100 · Process 31.7/40 · Delivery 45.0/60" in block
+    for label in ("Check-in", "Task picked", "Jira description",
+                  "Commit linked", "Jira comment", "Tasks done"):
+        assert f"• {label}:" in block
+    assert "• Jira description: 6.7/10" in block          # where Raghul lost them
+    assert "• Jira description: 10.0/10" in block         # where Soma did not
+
+
+def test_a_day_with_no_checks_says_why_instead_of_showing_six_zeros():
+    block = sc.compose_slack_roster(roster_records()).split("```")[2]
+    absent = next(ln for ln in block.splitlines() if ln.startswith("*Nadia*"))
+    unscored = next(ln for ln in block.splitlines() if ln.startswith("*Arjun*"))
+    assert "absent" in absent and "0.0" not in absent
+    assert "Not scored — jira: 503" in unscored and "0.0" not in unscored
+
+
+def test_the_post_and_the_dm_state_the_same_six_numbers():
+    """One CHECKS definition, so a cap can never drift between the two."""
+    record = score(canonical())
+    dm = sc.compose_slack_dm(record)
+    block = sc.compose_slack_roster([record]).split("```")[2]
+    for label, _key, cap in sc.CHECKS:
+        line = next(ln for ln in dm.splitlines() if ln.strip().startswith(f"• {label}:"))
+        assert line in block
+        assert line.endswith(f"/{cap}")
+
+
+def test_the_breakdown_keeps_per_task_evidence_out_of_the_channel():
+    """Ticket-level evidence stays in the DM (SCORING.md §8.3)."""
+    record = score(canonical())
+    assert "Tasks (" in sc.compose_slack_dm(record)
+    assert "Tasks (" not in sc.compose_slack_roster([record])
+
+
 def test_an_empty_roster_says_so():
     assert "nothing to report" in sc.compose_slack_roster([])
 

@@ -434,6 +434,27 @@ Meera          —        —         —  Not scored — jira: 503
 The post always carries the rubric in its footer, so a number in the channel is
 never separated from what produced it.
 
+Under the table, each developer's day is broken down check by check, so a
+person can see which check cost them the points without waiting for their DM:
+
+```
+*Raghul* — 76.7/100 · Process 31.7/40 · Delivery 45.0/60
+  • Check-in: 10.0/10
+  • Task picked: 5.0/5
+  • Jira description: 6.7/10
+  • Commit linked: 5.0/5
+  • Jira comment: 5.0/10
+  • Tasks done: 45.0/60
+```
+
+The `Coordination` bonus is listed there too, with the partner named, on the
+days it was earned. A day that was never scored, and an absent day, state that
+instead of printing six zeros — the same distinction the table makes.
+
+Per-task evidence (ticket keys, links, which check each ticket passed) stays in
+the DM: it is the one part of the breakdown that is about a particular ticket
+rather than a daily habit, and it is what would turn the post into a wall.
+
 `SCORE_PUBLIC_ORDER` controls the order:
 
 | Value | Effect |
